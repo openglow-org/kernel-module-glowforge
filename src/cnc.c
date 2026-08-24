@@ -147,7 +147,7 @@ static const u32 fatal_fault_conditions =
 
 static const u32 sdma_script[] = {
   /* Assembled from asm/sdma.asm by tools/sdma_asm.pl at build time (see
-   * Makefile). Edit the .asm — never hand-edit the generated header. */
+   * Makefile). Edit the .asm; never hand-edit the generated header. */
 #include "sdma.asm.h"
 };
 
@@ -214,7 +214,7 @@ static int load_sdma_script(struct cnc *self)
  * asynchronously (request_firmware_nowait), at an arbitrary time relative to
  * our probe; the script origin is placed above the firmware's RAM span, but
  * firmware growth would silently corrupt the script again, so trust nothing.
- * Rewrites only program memory — never the channel context, which holds live
+ * Rewrites only program memory, never the channel context, which holds live
  * position/head/tail state between runs. May sleep (channel-0 transfers);
  * call only outside atomic context, before a run starts.
  */
@@ -526,7 +526,7 @@ static enum hrtimer_restart ramp_update_tasklet_fn(struct hrtimer *timer)
  * which may sleep): if a waypoint is outstanding, the signal is the waypoint;
  * otherwise it is end-of-data. Two notifies raised before the ARM services
  * the first merge into ONE callback, so a coalesced waypoint+end-of-data
- * signal is decoded as just the waypoint here — the script re-raises the
+ * signal is decoded as just the waypoint here; the script re-raises the
  * end-of-data interrupt every ~255 parked iterations until we stop the EPIT,
  * so the lost half is redelivered shortly.
  */
@@ -553,7 +553,7 @@ static void cnc_sdma_interrupt(void *param)
     }
   }
   else if (self->status.state == STATE_RUNNING) {
-    /* End of data: normal completion — or an underrun, if a streaming
+    /* End of data: normal completion, or an underrun, if a streaming
      * feeder declared itself. The stop is laser-safe either way (the script
      * forces the laser/step lines low at end-of-data before signaling);
      * an underrun additionally means steps may have been skipped at speed,
@@ -627,9 +627,12 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
     uint32_t num_steps = opts.num_steps;
     bool was_powered;
 
-    /* Ensure there is enough data enqueued. (may sleep) */
+    /* Ensure there is enough data enqueued. (may sleep) A run request on an
+     * empty ring is an ordinary race for a live feeder (the previous run
+     * consumed the bytes before the request landed), reported by the
+     * -ENODATA it acts on; not a kernel-log event. */
     if (cnc_buffer_is_empty(self)) {
-      dev_err(self->dev, "cannot start cut; no data enqueued");
+      dev_dbg(self->dev, "run requested with no data enqueued");
       return -ENODATA;
     }
 
@@ -686,7 +689,7 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
      * status lock: regulator and PWM operations may sleep (regulator rdev
      * mutex; pwm_apply_might_sleep() on pwm-imx27), so they must never run
      * under spin_lock_bh. The fault check below still gates the actual run
-     * start; if a fault raced in, we compensate by powering back off —
+     * start; if a fault raced in, we compensate by powering back off,
      * but only if the steppers were off when we entered. */
     was_powered = (regulator_is_enabled(self->supply_40v) > 0);
     stepper_power_on_unchecked(self);
