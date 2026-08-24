@@ -628,11 +628,13 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
     bool was_powered;
 
     /* Ensure there is enough data enqueued. (may sleep) A run request on an
-     * empty ring is an ordinary race for a live feeder (the previous run
-     * consumed the bytes before the request landed), reported by the
-     * -ENODATA it acts on; not a kernel-log event. */
+     * empty ring is refused with -ENODATA and logged: a feeder asks for a run
+     * right after queueing bytes, so head == tail here means either a feeder
+     * defect or an engine that is not moving data (a head sync that reads
+     * back stale), never routine. This line was the only kernel-log trace of
+     * a gated SDMA. */
     if (cnc_buffer_is_empty(self)) {
-      dev_dbg(self->dev, "run requested with no data enqueued");
+      dev_err(self->dev, "run requested with no data enqueued");
       return -ENODATA;
     }
 
@@ -1796,6 +1798,7 @@ failed_sdma_init:
    * probe failure) driver data - e.g. across an -EPROBE_DEFER cycle. */
   if (self->sdmac) {
     sdma_set_channel_interrupt_callback(self->sdmac, NULL, NULL);
+    sdma_put_channel(self->sdmac);
   }
   epit_stop(self->epit);
 failed_epit_init:
@@ -1849,6 +1852,8 @@ void cnc_remove(struct platform_device *pdev)
   cnc_buffer_destroy(self);
   of_reserved_mem_device_release(self->dev);
   tasklet_kill(&self->fault_tasklet);
+  /* Last: nothing above may touch the engine once its clocks are released. */
+  sdma_put_channel(self->sdmac);
   dev_info(&pdev->dev, "%s: done", __func__);
   return;
 }
