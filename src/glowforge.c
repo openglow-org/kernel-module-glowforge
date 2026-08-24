@@ -88,10 +88,19 @@ static const struct of_device_id pic_dt_ids[] = {
   {},
 };
 
+/* The SPI core matches the device-name half of the compatible ("pic") against
+ * this table as well as the OF table and warns at probe when it is missing. */
+static const struct spi_device_id pic_spi_ids[] = {
+  { "pic", 0 },
+  {},
+};
+MODULE_DEVICE_TABLE(spi, pic_spi_ids);
+
 
 static struct spi_driver pic_driver = {
   .probe =  pic_probe,
   .remove = pic_remove,
+  .id_table = pic_spi_ids,
   .driver = {
     .name =   "glowforge_pic",
     .owner =  THIS_MODULE,
