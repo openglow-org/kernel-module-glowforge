@@ -1143,8 +1143,11 @@ static enum hrtimer_restart charge_pump_timer_cb(struct hrtimer *timer)
 /*
  * Laser-safety-chain readbacks. These expose the hardware safety signals for
  * monitoring; actual enforcement is in the hardware AND-gate, not here.
- * LASER_ON and LASER_PGOOD are active low, so their getters return the logical
- * (asserted) state; the others return the raw pin level.
+ * LASER_ON is active low, so its getter returns the logical (asserted) state.
+ * LASER_PGOOD is the supply's power-good line, driven high while the supply
+ * reports its outputs within spec (it does not follow HV_ENABLE or emission),
+ * so its getter returns the pin level: 1 = good. The others return the raw
+ * pin level.
  */
 int cnc_get_laser_enable(struct cnc *self)
 {
@@ -1159,7 +1162,7 @@ int cnc_get_laser_on(struct cnc *self)
 
 int cnc_get_laser_pgood(struct cnc *self)
 {
-  return !gpio_get_value(self->gpios[PIN_LASER_PGOOD]);
+  return gpio_get_value(self->gpios[PIN_LASER_PGOOD]);
 }
 
 int cnc_get_button_latch(struct cnc *self)
@@ -1218,7 +1221,8 @@ int cnc_get_interlock_circuit(struct cnc *self)
 
 /*
  * Free-running sampler. Counts how many of the last LASER_SAMPLE_WINDOW samples
- * read each line low, latching the counts once per window (~1 s).
+ * read each line asserted (LASER_ON low, LASER_PGOOD high), latching the counts
+ * once per window (~1 s).
  */
 static enum hrtimer_restart laser_sample_timer_cb(struct hrtimer *timer)
 {
@@ -1226,7 +1230,7 @@ static enum hrtimer_restart laser_sample_timer_cb(struct hrtimer *timer)
   if (gpio_get_value(self->gpios[PIN_LASER_ON_READBACK]) == 0) {
     self->laser_on_low_count++;
   }
-  if (gpio_get_value(self->gpios[PIN_LASER_PGOOD]) == 0) {
+  if (gpio_get_value(self->gpios[PIN_LASER_PGOOD]) != 0) {
     self->laser_pgood_low_count++;
   }
   if (++self->laser_sample_count >= LASER_SAMPLE_WINDOW) {

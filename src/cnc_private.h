@@ -213,9 +213,10 @@ int cnc_set_ramp_rate_hz_per_s(struct cnc *self, u32 hz_per_s);
 
 /**
  * Laser-safety-chain readbacks (monitoring only).
- * LASER_ON / LASER_PGOOD are active low; their getters return the logical
- * (asserted) state. The *_sampled getters return the per-window low-sample
- * count; cnc_get_interlock_circuit returns a raw bitmask of the safety GPIOs.
+ * LASER_ON is active low and LASER_PGOOD (the supply's power-good) is active
+ * high; their getters return the logical (asserted) state. The *_sampled
+ * getters return the per-window asserted-sample count; cnc_get_interlock_circuit
+ * returns a raw bitmask of the safety GPIOs.
  */
 int cnc_get_laser_enable(struct cnc *self);
 int cnc_get_laser_on(struct cnc *self);
