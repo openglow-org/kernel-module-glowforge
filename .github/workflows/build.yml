@@ -44,7 +44,7 @@ jobs:
       - name: Fetch the Glowforge BSP overlay
         uses: actions/checkout@v4
         with:
-          repository: ScottW514/meta-openglow
+          repository: openglow-org/meta-openglow
           ref: scarthgap
           path: meta-openglow
           fetch-depth: 1
