@@ -41,9 +41,6 @@
  *   The delay between target=0 and target=255 is specified by pulse_off.
  *   Both values are internally truncated to multiples of MSECS_PER_UPDATE.
  *
- * Please don't let Linus see this. I can't even imagine what he'd say if he
- * found out I'm doing physics calculations with hand-rolled fixed-point math
- * routines in kernel space.
  */
 
 #include "ledtrig_smooth.h"
@@ -296,7 +293,7 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr, cha
   struct led_classdev *led_cdev = dev_get_drvdata(dev);
   struct ledtrig_smooth_data *data = led_get_trigger_data(led_cdev);
   u8 speed = data->c.ipart << SPEED_C_SHIFT;
-  return sprintf(buf, "%hhd\n", speed);
+  return sprintf(buf, "%u\n", (unsigned int)speed);
 }
 
 
@@ -390,15 +387,14 @@ static void smooth_timer_cb(struct timer_list *t)
 
 static int smooth_activate(struct led_classdev *led_cdev)
 {
+  int ret;
   struct ledtrig_smooth_data *data = kzalloc(sizeof(struct ledtrig_smooth_data), GFP_KERNEL);
   if (!data) {
     return -ENOMEM;
   }
-  
-  if (sysfs_create_group(&led_cdev->dev->kobj, &smooth_attr_group)) {
-    goto failed_create_group;
-  }
- 
+
+  /* The data and the timer exist before the attributes become visible:
+   * a store that lands between the two would find no trigger data. */
   /* A reverse lookup in the correction table is required to set the current */
   /* value from the LED's current raw brightness value */
   data->value = value_from_raw_brightness(led_cdev->brightness);
@@ -406,13 +402,16 @@ static int smooth_activate(struct led_classdev *led_cdev)
   data->c = FIXED_INT(16);
   data->led_cdev = led_cdev;
   spin_lock_init(&data->lock);
-  led_set_trigger_data(led_cdev, data);
   timer_setup(&data->timer, smooth_timer_cb, 0);
+  led_set_trigger_data(led_cdev, data);
+
+  ret = sysfs_create_group(&led_cdev->dev->kobj, &smooth_attr_group);
+  if (ret) {
+    led_set_trigger_data(led_cdev, NULL);
+    kfree(data);
+    return ret;
+  }
   return 0;
-  
-failed_create_group:
-  kfree(data);
-  return -ENOMEM;
 }
 
 

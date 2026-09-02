@@ -99,7 +99,7 @@ static void test_preload_early_pause(void)
 
 /* A live feed several times the ring, topped up to the writer's gap: the
  * retained gap is the history, and it covers the factory pause with room to
- * spare. This is the case a blanket refusal used to cost us. */
+ * spare. */
 static void test_streamed_ring_full(void)
 {
   const uint64_t total = 100u * 1024u * 1024u;

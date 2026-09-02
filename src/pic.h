@@ -23,7 +23,7 @@
  * The PIC presents itself as a series of 16-bit "registers" that represent
  * sensor values or output levels. Each transaction is exactly 3 bytes long.
  * A write is one command byte (with the high bit set) followed by two data
- * bytes in litle-endian order. A read is one command byte (with the high bit
+ * bytes in little-endian order. A read is one command byte (with the high bit
  * clear) followed by two dummy bytes.
  *
  * This module provides several userspace APIs:

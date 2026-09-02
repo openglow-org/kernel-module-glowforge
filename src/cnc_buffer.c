@@ -108,23 +108,24 @@ ssize_t cnc_buffer_add_user_data(struct cnc *self, const uint8_t __user *data, s
   unsigned int copied;
   int ret;
 
-  /* Reject writes while running backward: the tail publish below rewrites
-   * scratch5, which a backward run repurposes as the oldest-valid-data dead
-   * stop — clobbering it would let the engine replay up to the whole ring
-   * of stale data backward. (The feeder must also not have a write in
-   * flight when it requests a backtrack; that ordering is the feeder's
-   * responsibility, since run-start SDMA writes happen outside this lock.) */
-  spin_lock_bh(&self->status_lock);
-  if (self->status.state == STATE_RUNNING && self->status.running_backward) {
-    spin_unlock_bh(&self->status_lock);
-    return -EBUSY;
-  }
-  spin_unlock_bh(&self->status_lock);
-
   /* One-open exclusivity does not bound the number of writers: the
    * brokered fd is inherited, so two processes can write() concurrently.
    * kfifo is single-producer; serialize the whole mutate-and-publish. */
   mutex_lock(&self->pulsebuf_lock);
+
+  /* Reject writes while running backward: the tail publish below rewrites
+   * scratch5, which a backward run repurposes as the oldest-valid-data dead
+   * stop; clobbering it would let the engine replay up to the whole ring
+   * of stale data backward. Checked under pulsebuf_lock, the lock the
+   * backtrack start commits its scratch5 and state under, so a write
+   * cannot slip between the check and the start. */
+  spin_lock_bh(&self->status_lock);
+  if (self->status.state == STATE_RUNNING && self->status.running_backward) {
+    spin_unlock_bh(&self->status_lock);
+    mutex_unlock(&self->pulsebuf_lock);
+    return -EBUSY;
+  }
+  spin_unlock_bh(&self->status_lock);
 
   /* read current head value from SDMA */
   ret = cnc_buffer_sync_head(self);

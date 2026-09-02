@@ -100,9 +100,9 @@ extern int cnc_enabled;
 /**
  * Controlled acceleration/deceleration rate, in Hz/s (the amount by which the
  * step frequency is changed per second). Settable at runtime via the
- * "ramp_rate" attribute. The bounds and default match the factory firmware;
- * the default of 125000 Hz/s reproduces the legacy behavior (freq >> 3 per
- * 10 ms update) at the default 10 kHz step frequency.
+ * "ramp_rate" attribute. The bounds and default match the factory firmware:
+ * 125000 Hz/s is freq >> 3 per 10 ms update at the default 10 kHz step
+ * frequency.
  */
 #define RAMP_RATE_MIN_HZ_PER_S                10000
 #define RAMP_RATE_MAX_HZ_PER_S                500000
@@ -111,8 +111,9 @@ extern int cnc_enabled;
 /**
  * Laser safety-line sampling. A free-running timer polls the LASER_ON and
  * LASER_PGOOD inputs; every LASER_SAMPLE_WINDOW samples (~1 second) it latches
- * the number of samples in which each line read low, exposed via the
- * laser_on_sampled / laser_pgood_sampled attributes.
+ * the number of samples in which LASER_ON read low (emitting) and LASER_PGOOD
+ * read high (the supply good), exposed via the laser_on_sampled /
+ * laser_pgood_sampled attributes.
  */
 #define LASER_SAMPLE_WINDOW                   255
 #define LASER_SAMPLE_INTERVAL_NS              (NSEC_PER_SEC / LASER_SAMPLE_WINDOW)
@@ -131,9 +132,9 @@ static const pin_id stepper_fault_gpios[NUM_STEPPER_FAULT_SIGNALS] = {
 };
 
 /**
- * Fatal fault conditions require the driver to stop immediately and enter the
- * FAULT state. If a non-fatal fault occurs, the driver will attept a controlled
- * deceleration and enter the IDLE state.
+ * Every stepper fault is fatal: the driver stops immediately and enters the
+ * FAULT state. (A non-fatal class would take a controlled deceleration into
+ * IDLE instead; none is defined.)
  */
 static const u32 fatal_fault_conditions =
   (1 << FAULT_X) |
@@ -397,6 +398,7 @@ static void _driver_stop(struct cnc *self, enum cnc_state next_state)
 
   dev_dbg(self->dev, "stopped.");
   self->status.state = next_state;
+  self->stop_generation++;
   cnc_notify_state_changed(self);
 }
 
@@ -507,6 +509,11 @@ static enum hrtimer_restart ramp_update_tasklet_fn(struct hrtimer *timer)
     if (self->ramp_step_freq >= self->step_freq) {
       dev_dbg(self->dev, "stopping acceleration");
       epit_set_hz(self->epit, self->step_freq); /* restore full step freq */
+      /* The ramp is over: a later deceleration in this run starts from
+       * step_freq, not from the accel overshoot. */
+      self->ramp_step_freq = self->step_freq;
+      self->status.accelerating = false;
+      self->status.decelerating = false;
       return HRTIMER_NORESTART;
     }
   }
@@ -626,13 +633,14 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
     uint32_t regs[3];
     uint32_t num_steps = opts.num_steps;
     bool was_powered;
+    /* Every stop bumps this; the commit below refuses if it moved. */
+    unsigned int stop_gen = READ_ONCE(self->stop_generation);
 
     /* Ensure there is enough data enqueued. (may sleep) A run request on an
      * empty ring is refused with -ENODATA and logged: a feeder asks for a run
      * right after queueing bytes, so head == tail here means either a feeder
      * defect or an engine that is not moving data (a head sync that reads
-     * back stale), never routine. This line was the only kernel-log trace of
-     * a gated SDMA. */
+     * back stale), never routine. */
     if (cnc_buffer_is_empty(self)) {
       dev_err(self->dev, "run requested with no data enqueued");
       return -ENODATA;
@@ -699,13 +707,20 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
       io_pwm_set_duty_cycle(&self->laser_pwm, LASER_PWM_IDLE_DUTY);
     }
 
-    /* We could have transitioned to FAULT between the start of the function */
-    /* and now, so we have to lock and check the fault state. */
-    /* If a fault occurs during the execution of this block, we'll get a */
-    /* callback immediately after we release the lock, which will transition */
-    /* the driver to the FAULT state. */
+    /* We could have transitioned to FAULT between the start of the function
+     * and now, so we have to lock and check the fault state. If a fault
+     * occurs during the execution of this block, we'll get a callback
+     * immediately after we release the lock, which will transition the
+     * driver to the FAULT state. A stop that landed in the same window (a
+     * disable dropped the rail, a halt) is refused the same way: a run
+     * committed over it would play FIRE bits at one spot on a dead rail. */
     spin_lock_bh(&self->status_lock);
     if (self->status.triggered_faults) {
+      ret = -EPERM;
+    } else if (self->stop_generation != stop_gen ||
+               (self->status.state != STATE_IDLE &&
+                self->status.state != STATE_DISABLED)) {
+      dev_err(self->dev, "run refused: the driver was stopped while starting");
       ret = -EPERM;
     } else {
       /* The waypoint action flags are only meaningful when a waypoint is
@@ -727,9 +742,6 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
           gpio_get_value(self->gpios[PIN_LASER_LATCH_RESET]) == 0) {
         gpio_direction_output(self->gpios[PIN_LASER_ON], 0);
       }
-
-      /* clear all fault conditions */
-      self->status.triggered_faults &= fatal_fault_conditions;
 
       cnc_notify_state_changed(self);
 
@@ -940,14 +952,15 @@ int cnc_enable(struct cnc *self)
   int i;
   unsigned long live_faults = 0;
 
-  /* Live fault-line snapshot (active low) for the recovery gate below. */
+  spin_lock_bh(&self->status_lock);
+  /* Live fault-line snapshot (active low) for the recovery gate below,
+   * taken under the lock (the reads do not sleep): an edge between the
+   * snapshot and the clear would otherwise be consumed and lost. */
   for (i = 0; i < NUM_STEPPER_FAULT_SIGNALS; i++) {
     if (gpio_get_value(self->gpios[stepper_fault_gpios[i]]) == 0) {
       live_faults |= (1 << i);
     }
   }
-
-  spin_lock_bh(&self->status_lock);
   switch (self->status.state) {
     case STATE_DISABLED:
       if (self->status.triggered_faults & fatal_fault_conditions) {
@@ -1007,7 +1020,7 @@ int cnc_enable(struct cnc *self)
  * Idle: take step
  * Running: error
  * Disabled: take step (Z axis enable isn't controlled by kernel module)
- * Fault: error (TODO)
+ * Fault: error
  */
 int cnc_single_z_step(struct cnc *self, bool direction)
 {
@@ -1231,13 +1244,13 @@ static enum hrtimer_restart laser_sample_timer_cb(struct hrtimer *timer)
     self->laser_on_low_count++;
   }
   if (gpio_get_value(self->gpios[PIN_LASER_PGOOD]) != 0) {
-    self->laser_pgood_low_count++;
+    self->laser_pgood_high_count++;
   }
   if (++self->laser_sample_count >= LASER_SAMPLE_WINDOW) {
     self->laser_on_sampled = self->laser_on_low_count;
-    self->laser_pgood_sampled = self->laser_pgood_low_count;
+    self->laser_pgood_sampled = self->laser_pgood_high_count;
     self->laser_on_low_count = 0;
-    self->laser_pgood_low_count = 0;
+    self->laser_pgood_high_count = 0;
     self->laser_sample_count = 0;
   }
   hrtimer_forward_now(timer, laser_sample_interval_ktime);
@@ -1403,14 +1416,16 @@ static void fault_tasklet_fn(unsigned long data)
   bool need_to_halt = false;
   int bit;
 
-  /* Process each pending fault condition. */
-  /* If a fatal fault has occurred, stop the driver immediately. */
-  /* If a non-fatal fault has occurred, and the driver is running, */
-  /* attempt a controlled deceleration. */
+  /* Process each pending fault condition. Every defined fault is fatal:
+   * the driver stops immediately. Logged once per fault here, on the
+   * tasklet, not per edge in the handler (a chattering line would flood
+   * the log from hardirq context). */
   for (bit = 0; bit < NUM_FAULT_CONDITIONS; bit++) {
     /* test_and_clear_bit() is atomic */
     if (test_and_clear_bit(bit, &self->pending_faults)) {
-      dev_err(self->dev, "fault %d", (1 << bit));
+      if (!(self->status.triggered_faults & (1 << bit))) {
+        dev_err(self->dev, "driver fault %d", bit);
+      }
       self->status.triggered_faults |= (1 << bit);
       if (FAULT_IS_FATAL(bit)) {
         need_to_halt = true;
@@ -1418,14 +1433,9 @@ static void fault_tasklet_fn(unsigned long data)
     }
   }
 
-  /* sanity check: don't stop if no faults have occurred */
-  if (self->status.triggered_faults) {
-    if (need_to_halt) {
-      dev_err(self->dev, "critical fault occurred: emergency stop");
-      _driver_stop(self, STATE_FAULT);
-    } else if (self->status.state == STATE_RUNNING) {
-      _cnc_decel_start(self);
-    }
+  if (need_to_halt && self->status.state != STATE_FAULT) {
+    dev_err(self->dev, "critical fault occurred: emergency stop");
+    _driver_stop(self, STATE_FAULT);
   }
 }
 
@@ -1460,7 +1470,6 @@ static irqreturn_t cnc_fault_irq_handler(int irq, void *dev_id)
   }
 
   if ((self->ignored_faults & (1 << fault_num)) == 0) {
-    dev_err(self->dev, "driver fault detected! %d", fault_num);
     cnc_assert_fault(self, fault_num);
   }
   return IRQ_HANDLED;
@@ -1512,8 +1521,24 @@ static int cnc_register_fault_irqs(struct cnc *self)
       dev_err(self->dev, "devm_request_irq(%d) failed: %d", irq, ret);
       return ret;
     }
+    self->fault_irqs[i] = irq;
   }
   return 0;
+}
+
+
+/* Free the fault IRQs a probe registered, ahead of devres: the unwind
+ * releases the GPIOs they read, and the handlers must be gone first. */
+static void cnc_free_fault_irqs(struct cnc *self)
+{
+  int i;
+  for (i = 0; i < NUM_STEPPER_FAULT_SIGNALS; i++) {
+    if (self->fault_irqs[i] > 0) {
+      devm_free_irq(self->dev, self->fault_irqs[i],
+                    FAULT_DEV_ID_FROM_CNC_AND_SIGNAL(self, i));
+      self->fault_irqs[i] = 0;
+    }
+  }
 }
 
 
@@ -1794,7 +1819,12 @@ failed_create_link:
 failed_get_dirent:
   sysfs_remove_group(&pdev->dev.kobj, &cnc_attr_group);
 failed_create_group:
+  /* The fault IRQs are devm-owned and would stay live until devres runs,
+   * after the GPIOs below are gone: free them now, and no tasklet may run
+   * on driver data that is about to be freed. */
+  cnc_free_fault_irqs(self);
 failed_register_fault_irqs:
+  tasklet_kill(&self->fault_tasklet);
 failed_regulator_get:
 failed_load_sdma_script:
 failed_sdma_init:
@@ -1825,11 +1855,8 @@ void cnc_remove(struct platform_device *pdev)
   if (!self) { return; } /* probe never set drvdata (failed early) */
   dev_info(&pdev->dev, "%s: started", __func__);
   /* Remove every userspace surface FIRST, so no open() and no attribute
-   * access can race the hardware teardown below (a concurrent cat used
-   * to reach gpio_get_value on freed descriptors).
-   * The link lives on the shared /sys/glowforge kobject, not the
-   * device's; removing it from the wrong kobject left a stale link that
-   * made every rebind fail with -EEXIST. */
+   * access can race the hardware teardown below. The link lives on the
+   * shared /sys/glowforge kobject, not the device's. */
   misc_deregister(&self->pulsedev);
   /* Detaching from the switch device leaves INTERLOCK_LATCH_RESET high. */
   cnc_interlock_unregister(&self->interlock);

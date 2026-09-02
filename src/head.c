@@ -143,13 +143,17 @@ int head_probe(struct i2c_client *client)
   i2c_set_clientdata(client, self);
 
   /* Check head identity */
-  uint16_t head_id;
-  head_id = i2c_smbus_read_word_data(client, HEAD_REG_ID);
-	if (head_id != HEAD_MAGIC_NUMBER) {
-		dev_err(&client->dev, "head not detected\n");
-    ret = -1;
+  int head_id = i2c_smbus_read_word_data(client, HEAD_REG_ID);
+  if (head_id < 0) {
+    dev_err(&client->dev, "head identity read failed: %d\n", head_id);
+    ret = head_id;
     goto failed_head_init;
-	}
+  }
+  if (head_id != HEAD_MAGIC_NUMBER) {
+    dev_err(&client->dev, "head not detected (id 0x%04x)\n", head_id);
+    ret = -ENODEV;
+    goto failed_head_init;
+  }
 
   /* Configure head */
   ret = i2c_smbus_write_word_data(client, HEAD_REG_LAMBDA_K, 0x07ae);

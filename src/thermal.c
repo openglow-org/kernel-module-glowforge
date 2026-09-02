@@ -26,9 +26,6 @@
 #include "uapi/glowforge.h"
 #include <linux/interrupt.h>
 
-/** Interval between fan speed measurements */
-#define TACH_SWITCH_TIME_NS   2.5e8
-
 /** PWM period for heater control */
 #define HEATER_PWM_PERIOD_NS  1e7
 
@@ -208,7 +205,7 @@ const struct attribute_group thermal_attr_group = {
 /**
  * IRQ handler called on every rising edge of fan tach signals.
  */
-static irqreturn_t tach_irq_handler(unsigned int irq, void *dev_id)
+static irqreturn_t tach_irq_handler(int irq, void *dev_id)
 {
   struct tach_channel *tach = (struct tach_channel *)dev_id;
   ktime_t now = ktime_get();
@@ -275,7 +272,7 @@ static int thermal_init_tachs(struct thermal *self)
       return -ENOENT;
     }
 
-    ret = request_irq(irq_num, (irq_handler_t)tach_irq_handler,
+    ret = request_irq(irq_num, tach_irq_handler,
         IRQF_TRIGGER_RISING, pin->name, (void*)tach);
     if (unlikely(ret < 0)) {
       pr_err("request_irq(%d) failed: %d\n", irq_num, ret);

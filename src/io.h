@@ -178,7 +178,6 @@ void io_release_gpios(int *gpios, size_t ngpios);
  * @param ngpios      Size of the gpios array
  * @param change_set  Pin changes to apply before releasing the GPIOs
  */
-void io_set_and_release_gpios(int *gpios, size_t ngpios, const struct pin_change_set *change_set);
 
 /**
  * Initializes a set of PWM channels.

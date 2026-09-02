@@ -155,13 +155,6 @@ void io_change_pins(int *gpios, size_t ngpios, const struct pin_change_set *chan
 }
 
 
-void io_set_and_release_gpios(int *gpios, size_t ngpios, const struct pin_change_set *change_set)
-{
-  io_change_pins(gpios, ngpios, change_set);
-  io_release_gpios(gpios, ngpios);
-}
-
-
 void io_release_pwms(struct pwm_channel *pwm_channels, size_t npwms)
 {
   int i;

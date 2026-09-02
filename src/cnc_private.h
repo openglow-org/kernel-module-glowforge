@@ -85,14 +85,12 @@ int cnc_halt(struct cnc *self);
  *
  * @param num_steps Number of steps to run before decelerating
  * @return          0 on success
- *                  -EPERM if the driver is not in the IDLE state
+ *                  -EPERM if the driver is not in the IDLE state, or if
+ *                  num_steps exceeds what the ring still holds played and
+ *                  genuine (max_backtrack): a request is refused rather
+ *                  than quietly shortened
  *                  -EINVAL if num_steps == 0
- *                  -ENODATA if the head is at the beginning of the data
- *
- * @note The pulse data buffer must contain at least `num_steps+N` bytes of
- *       valid data, where `N` is a constant determined by deceleration rate.
- *       If there is insufficient data enqueued, acceleration/deceleration stops
- *       when the oldest enqueued byte is reached.
+ *                  -ENODATA if the ring holds nothing unplayed
  */
 int cnc_backtrack(struct cnc *self, uint32_t num_steps);
 
@@ -365,15 +363,15 @@ enum cnc_buffer_clear_flag {
 
 struct cnc_status {
   enum cnc_state state:8;
-  int triggered_faults:8;
-  int decelerating:1; /* 1 if currently decelerating */
-  int accelerating:1; /* 1 if currently accelerating */
-  int decel_on_interrupt:1; /* if 1, start decel on SDMA waypoint interrupt */
-  int enable_laser_on_interrupt:1; /* if 1, enable laser on SDMA waypoint interrupt */
-  int waypoint_armed:1; /* if 1, a waypoint interrupt (scratch7) is outstanding */
-  int running_backward:1; /* if 1, the current run consumes the ring backward */
-  int streaming:1; /* if 1, a feeder declared live streaming: end-of-data is an underrun */
-  int reserved:9;
+  unsigned int triggered_faults:8;
+  unsigned int decelerating:1; /* 1 if currently decelerating */
+  unsigned int accelerating:1; /* 1 if currently accelerating */
+  unsigned int decel_on_interrupt:1; /* if 1, start decel on SDMA waypoint interrupt */
+  unsigned int enable_laser_on_interrupt:1; /* if 1, enable laser on SDMA waypoint interrupt */
+  unsigned int waypoint_armed:1; /* if 1, a waypoint interrupt (scratch7) is outstanding */
+  unsigned int running_backward:1; /* if 1, the current run consumes the ring backward */
+  unsigned int streaming:1; /* if 1, a feeder declared live streaming: end-of-data is an underrun */
+  unsigned int reserved:9;
 } __attribute__((packed));
 
 
@@ -395,7 +393,7 @@ struct cnc {
   /** Hardware timer. */
   struct epit *epit;
   /** Pointer to the contiguous array of pulse data. */
-  uint8_t *pulsebuf_virt; /* hi Jake! */
+  uint8_t *pulsebuf_virt;
   /** Physical address of the contiguous array of pulse data. */
   dma_addr_t pulsebuf_phys;
   /** Size in bytes of the contiguous array of pulse data. */
@@ -454,6 +452,12 @@ struct cnc {
   volatile u32 ignored_faults;
   /** Tasklet scheduled by fault interrupt handlers. */
   struct tasklet_struct fault_tasklet;
+  /** The fault IRQ numbers, so a failed probe can free them before the
+   *  GPIOs they belong to are released. */
+  int fault_irqs[4];     /* NUM_STEPPER_FAULT_SIGNALS is 3; the dev_id carries two bits */
+  /** Bumped by every stop; a run start refuses to commit if it moved
+   *  while the start was in its sleeping section. */
+  unsigned int stop_generation;
   /**
    * Atomic bitfield indicating faults that have not been handled.
    * If a fault needs to be asserted (esp. in hardirq context), use set_bit()
@@ -475,11 +479,12 @@ struct cnc {
   struct hrtimer laser_sample_timer;
   /** Drives INTERLOCK_LATCH_RESET from the remote-interlock switch state. */
   struct cnc_interlock interlock;
-  /** Working low-sample counts for the in-progress sampling window. */
+  /** Working counts for the in-progress sampling window: LASER_ON samples
+   *  that read low (emitting), LASER_PGOOD samples that read high (good). */
   u32 laser_on_low_count;
-  u32 laser_pgood_low_count;
+  u32 laser_pgood_high_count;
   u32 laser_sample_count;
-  /** Latched low-sample counts from the last window (laser_*_sampled attrs). */
+  /** Latched counts from the last window (laser_*_sampled attrs). */
   u32 laser_on_sampled;
   u32 laser_pgood_sampled;
 #if INSTALL_PANIC_HANDLER

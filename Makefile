@@ -46,11 +46,3 @@ clean:
 	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) clean
 	rm -f $(SDMA_SCRIPT_ASSEMBLED)
 
-# run menu-based config tool
-config:
-	$(MAKE) -$(MAKEFLAGS) -C $(KERNEL_SRC) nconfig
-	cp $(KERNEL_SRC)/.config $(PWD)/config.new
-
-# pass any other command to the kernel Makefile directly
-%:
-	$(MAKE) -$(MAKEFLAGS) -C $(KERNEL_SRC) $@

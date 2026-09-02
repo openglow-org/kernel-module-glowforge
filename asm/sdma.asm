@@ -270,7 +270,7 @@ endbyte:
                     # the cut keeps streaming without a scheduling hiccup)
 
 endbyte_done:
-  # if bit 2 in r1 was set, process another byte immmediately
+  # if bit 2 in r1 was set, process another byte immediately
   btsti r1, 2   # updates T flag
   bclri r1, 2   # leaves T flag unchanged
   bt fifo_consume_byte_no_iflag_clear
@@ -358,10 +358,10 @@ alldone_renotify:
   # Self-healing end-of-data signal: two notifies raised before the ARM
   # services the first merge into a single host callback, so the end-of-data
   # notify can be lost by coalescing with a waypoint notify. Re-raise it
-  # every 255 parked iterations until the host stops the EPIT. (The old
-  # script signaled on every idle tick, which stormed the host; this is the
-  # middle ground: a lost signal heals within a few ms at the 200 kHz
-  # ceiling.) Placed at the tail to keep all branch displacements in range.
+  # every 255 parked iterations until the host stops the EPIT: seldom enough
+  # not to storm the host, often enough that a lost signal heals within a
+  # few ms at the 200 kHz ceiling. Placed at the tail to keep all branch
+  # displacements in range.
   addi r2, 1
   cmpeqi r2, 255
   bf alldone_wait

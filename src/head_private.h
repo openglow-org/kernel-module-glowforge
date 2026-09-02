@@ -39,8 +39,6 @@
 #define HEAD_REG_SER_LSB 0x0a
 #define HEAD_REG_SER_MSB 0x0c
 
-#define HEAD_REG_RESET 0xc9
-#define HEAD_REG_RESET_VAL 0x5a
 
 #define HEAD_REG_RO_GRP 0x05
 #define HEAD_REG_RO_HALL_SENSOR 0x01 << 0

@@ -30,10 +30,14 @@
 
 #pragma mark - Character device fops
 
-/* miscdevice sets filp's private_data pointer to itself */
+/* miscdevice sets filp's private_data pointer to itself. The driver data
+ * is gone once the driver is unbound while a holder keeps the file open
+ * (forgectrl holds it for its lifetime): every fop checks for that before
+ * touching it, and answers -ENODEV. */
 #define DEV_SELF_FROM_FILP(filp) \
   struct device *dev = ((struct miscdevice *)filp->private_data)->parent; \
-  struct cnc *self = dev_get_drvdata(dev)
+  struct cnc *self = dev_get_drvdata(dev); \
+  if (unlikely(!self)) { return -ENODEV; }
 
 static int pulsedev_open(struct inode *inode, struct file *filp)
 {
