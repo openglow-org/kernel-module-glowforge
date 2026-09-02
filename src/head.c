@@ -98,7 +98,8 @@ static void head_make_safe(struct head_data *self)
 
   dev_info(self->dev, "making safe");
 
-  ret = head_write_i2c_byte(client, HEAD_REG_RW_GRP | HEAD_REG_BITS_CLEAR,
+  /* Both bits are active low: set = driver disabled, low current. */
+  ret = head_write_i2c_byte(client, HEAD_REG_RW_GRP | HEAD_REG_BITS_SET,
     HEAD_REG_RW_Z_ENABLE | HEAD_REG_RW_Z_CURRENT);
   if (ret < 0) {
     dev_err(self->dev, "cannot de-energize the lens motor: %d", ret);
