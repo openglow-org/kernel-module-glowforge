@@ -25,14 +25,13 @@
 #include "uapi/glowforge.h"
 #include "notifiers.h"
 #include <linux/delay.h>
-#include <linux/ktime.h>
 #include <linux/lockdep.h>
 
 extern struct kobject *glowforge_kobj;
 
 /** Module parameters */
 extern int pic_enabled;
-extern unsigned int pic_gap_us;
+extern unsigned int pic_settle_us;
 
 /**
  * If 1, verify that each write to a register succeeded by reading back
@@ -54,30 +53,30 @@ extern unsigned int pic_gap_us;
 #define TRANSFER_DELAY_USECS  2
 
 /**
- * One SPI transaction with the PIC, paced. The PIC's converter is disturbed
- * by SPI traffic: a read that follows another transaction within a fraction
- * of a millisecond comes back high and wide, one 0.5 ms or more later reads
- * tight (measured on the coolant thermistors). Every transaction therefore
- * waits until pic_gap_us has passed since the last one ended, under the
- * lock, so every reader sees the same value whatever the others do. Zero
- * turns the pacing off.
+ * One SPI transaction with the PIC, under a defined CPU load. A read
+ * returns the PIC's last conversion of that channel, at most one loop of
+ * its free-running sampler old (about 0.35 ms, 25 us a channel), and that
+ * conversion's count depends on the SoC's load at the moment it was made:
+ * the PIC converts against its own supply while the sensor dividers hang on
+ * the board's reference, and the CPU's idle-to-busy step moves the supply
+ * by about a percent (6 counts on the coolant thermistors, both regimes
+ * tight). A reader that wakes and reads at once gets an idle-regime value;
+ * one that has been busy gets the other. So every transaction is preceded
+ * by pic_settle_us of the CPU kept busy, longer than one sampler loop, and
+ * the value read was converted under the same load whoever the caller is
+ * and whatever it was doing. Zero turns it off.
  */
 static int pic_transfer(struct pic *self, struct spi_device *spi, struct spi_transfer *x)
 {
-  unsigned int gap = READ_ONCE(pic_gap_us);
-  int ret;
+  unsigned int settle = READ_ONCE(pic_settle_us);
 
   lockdep_assert_held(&self->lock);
-  if (gap) {
-    s64 since_us = ktime_us_delta(ktime_get(), self->last_xfer_end);
-    if (since_us >= 0 && since_us < gap) {
-      unsigned long wait = gap - since_us;
-      usleep_range(wait, wait + wait / 4 + 10);
-    }
+  while (settle) {
+    unsigned int step = settle > 50 ? 50 : settle;
+    udelay(step);
+    settle -= step;
   }
-  ret = spi_sync_transfer(spi, x, 1);
-  self->last_xfer_end = ktime_get();
-  return ret;
+  return spi_sync_transfer(spi, x, 1);
 }
 
 /**
