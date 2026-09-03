@@ -27,6 +27,7 @@
 #include "pic.h"
 #include "notifiers.h"
 #include "uapi/glowforge.h"
+#include <linux/ktime.h>
 #include <linux/leds.h>
 
 #define REGISTER_READ_COMMAND(reg)  ((reg)<<1)
@@ -64,6 +65,9 @@ struct pic {
   struct pic_transaction *rxbuf;
   /** Size of the most recent transfer */
   size_t rxbuf_size;
+  /** When the last SPI transaction ended; the next one waits pic_gap_us
+   *  after it (see pic_transfer). */
+  ktime_t last_xfer_end;
   /** Notifiers */
   struct notifier_block dms_notifier;
   /** Work queue for LED brightness writes (SPI transfers). */

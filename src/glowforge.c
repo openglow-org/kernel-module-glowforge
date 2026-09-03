@@ -51,11 +51,16 @@ int cnc_enabled = 1;
 int pic_enabled = 1;
 int thermal_enabled = 1;
 int head_enabled = 1;
+/** The least time between two sensor-PIC SPI transactions, in
+ *  microseconds (pic.c); 0 turns the pacing off. Writable at runtime. */
+unsigned int pic_gap_us = 1000;
 
 module_param(cnc_enabled, int, 0);
 module_param(pic_enabled, int, 0);
 module_param(thermal_enabled, int, 0);
 module_param(head_enabled, int, 0);
+module_param(pic_gap_us, uint, 0644);
+MODULE_PARM_DESC(pic_gap_us, "least time between two sensor-PIC SPI transactions, microseconds (0 = none)");
 
 /** kobject that provides /sys/glowforge */
 struct kobject *glowforge_kobj;

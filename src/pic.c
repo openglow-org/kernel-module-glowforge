@@ -24,11 +24,15 @@
 #include "pic_private.h"
 #include "uapi/glowforge.h"
 #include "notifiers.h"
+#include <linux/delay.h>
+#include <linux/ktime.h>
+#include <linux/lockdep.h>
 
 extern struct kobject *glowforge_kobj;
 
 /** Module parameters */
 extern int pic_enabled;
+extern unsigned int pic_gap_us;
 
 /**
  * If 1, verify that each write to a register succeeded by reading back
@@ -48,6 +52,33 @@ extern int pic_enabled;
  * before the chip select changes (spi_transfer.delay).
  */
 #define TRANSFER_DELAY_USECS  2
+
+/**
+ * One SPI transaction with the PIC, paced. The PIC's converter is disturbed
+ * by SPI traffic: a read that follows another transaction within a fraction
+ * of a millisecond comes back high and wide, one 0.5 ms or more later reads
+ * tight (measured on the coolant thermistors). Every transaction therefore
+ * waits until pic_gap_us has passed since the last one ended, under the
+ * lock, so every reader sees the same value whatever the others do. Zero
+ * turns the pacing off.
+ */
+static int pic_transfer(struct pic *self, struct spi_device *spi, struct spi_transfer *x)
+{
+  unsigned int gap = READ_ONCE(pic_gap_us);
+  int ret;
+
+  lockdep_assert_held(&self->lock);
+  if (gap) {
+    s64 since_us = ktime_us_delta(ktime_get(), self->last_xfer_end);
+    if (since_us >= 0 && since_us < gap) {
+      unsigned long wait = gap - since_us;
+      usleep_range(wait, wait + wait / 4 + 10);
+    }
+  }
+  ret = spi_sync_transfer(spi, x, 1);
+  self->last_xfer_end = ktime_get();
+  return ret;
+}
 
 /**
  * Set of initial values to at initialization time.
@@ -76,7 +107,7 @@ int pic_read_one_register(struct spi_device *spi, enum pic_register reg)
   mutex_lock(&self->lock);
   self->txbuf[0].cmd = REGISTER_READ_COMMAND(reg);
   self->rxbuf_size = x.len;
-  status = spi_sync_transfer(spi, &x, 1);
+  status = pic_transfer(self, spi, &x);
   ret = (status == 0) ? self->rxbuf[0].value : status;
   mutex_unlock(&self->lock);
   return ret;
@@ -107,7 +138,7 @@ int pic_write_one_register(struct spi_device *spi, enum pic_register reg, pic_va
   self->txbuf[1].cmd = REGISTER_READ_COMMAND(reg);
 #endif
   self->rxbuf_size = x.len;
-  ret = spi_sync_transfer(spi, &x, 1);
+  ret = pic_transfer(self, spi, &x);
 
 #if VERIFY_WRITES
   if (ret == 0) {
@@ -151,7 +182,7 @@ int pic_read_register_range(struct spi_device *spi, enum pic_register first_reg,
     self->txbuf[i].cmd = REGISTER_READ_COMMAND(first_reg+i);
   }
   self->rxbuf_size = x.len;
-  ret = spi_sync_transfer(spi, &x, 1);
+  ret = pic_transfer(self, spi, &x);
   if (ret == 0) {
     for (i = 0; i < num_regs; i++) {
       *bptr++ = self->rxbuf[i].value;
@@ -203,7 +234,7 @@ int pic_write_register_range(struct spi_device *spi, enum pic_register first_reg
   }
 #endif
   self->rxbuf_size = x.len;
-  ret = spi_sync_transfer(spi, &x, 1);
+  ret = pic_transfer(self, spi, &x);
 #if VERIFY_WRITES
   if (ret == 0) {
     bptr = (pic_value *)buf;
@@ -255,7 +286,7 @@ int pic_write_data(struct spi_device *spi, const void *buf, size_t count)
   mutex_lock(&self->lock);
   memcpy(self->txbuf, buf, count);
   self->rxbuf_size = count;
-  ret = spi_sync_transfer(spi, &x, 1);
+  ret = pic_transfer(self, spi, &x);
   mutex_unlock(&self->lock);
   return ret;
 }
