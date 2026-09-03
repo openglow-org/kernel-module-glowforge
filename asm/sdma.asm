@@ -8,6 +8,10 @@
 #   MS - 0x00000000 (source and destination address frozen; start in read mode)
 #   PS - 0x000c0400 (destination address frozen; 32-bit write size; start in write mode)
 #   CA (r7, 18) - GPIO lock bitmask (see below)
+#   (r7, 20) - laser inhibit bitmask (see below). A reserved context word on
+#              the i.MX6 SDMA (no functional unit behind it): plain storage.
+#   (r7, 21) - physical address of the end-of-data mailbox (see alldone).
+#              Also a reserved context word.
 #   scratch[5] (r7, 29) - FIFO "in" index (tail)
 #   scratch[6] (r7, 30) - direction; 0x00000001=forward, 0xFFFFFFFF=backward.
 #                         Also zeroed at end-of-data and reused as an
@@ -23,7 +27,7 @@
 #   r0 - temporary
 #   r1 - internal flags (see below)
 #   r2 - current pulse data byte/temporary; while parked at end-of-data,
-#        repurposed as the idle re-notify counter (see alldone_renotify)
+#        repurposed as the idle re-notify counter (see alldone)
 #   r3 - GPIO pin values to be written
 #   scratch[0] (r7, 24) - X position in steps (signed)
 #   scratch[1] (r7, 25) - Y position in steps (signed)
@@ -37,12 +41,18 @@
 #
 # If scratch7 > 0, it is decremented once per byte (regardless of whether data
 # is being processed forward or backward.)
-# When the value reaches 0, a host interrupt is sent, but data continues to
-# be processed. Can be used to signal the host at an arbitrary point in the cut.
+# When the value reaches 0, the laser inhibit bitmask is cleared and a host
+# interrupt is sent, but data continues to be processed. Can be used to signal
+# the host at an arbitrary point in the cut.
 # (similar to a scanline interrupt on old game consoles)
 #
 # If scratch7 is 0, a host interrupt is only generated when the entire FIFO
 # has been consumed.
+#
+# Both interrupts share one line. The host tells them apart by the
+# end-of-data mailbox: this script writes 1 to the mailbox word before it
+# raises the end-of-data interrupt, and never touches it for a waypoint; the
+# host clears the word before every run.
 #
 # GPIO lock bitmask:
 #   The inverse of this 32-bit field is ANDed with the value to be written to
@@ -54,12 +64,25 @@
 #   bit 29 set - Y2_STEP always low (Y2 motor locked)
 #   Setting bits other than these is undefined behavior.
 #
+# Laser inhibit bitmask:
+#   ANDed out of the GPIO word the same way, and cleared by this script when
+#   the waypoint counter reaches zero. The host sets it to the laser pins
+#   (bits 30 and 31) at the start of a resume, whose lead must play with the
+#   laser off, so the laser line is held low by the script's own writes up to
+#   the waypoint byte and follows the pulse data from the next byte on. The
+#   host never has to touch the GPIO data register while the script runs.
+#   Setting bits other than 30 and 31 is undefined behavior.
+#
 # r1 flags:
 #   bit 0 - always set, can be tested for unconditional jumps
 #   bit 1 - set if last byte processed was a power level
 #           (prevents processing multiple power levels in a row)
 #   bit 2 - set if another byte should be processed immediately
 #           (instead of waiting for the next timer interrupt)
+#
+# Layout: branches are 8-bit displacements, so the main loop keeps only the
+# per-byte path; the waypoint action, the power-level path and the first
+# end-of-data tick live past the loop, reached by short forward branches.
 
 start:
   ldi r1, 1     # constant
@@ -187,6 +210,8 @@ do_laser:
 set_step_and_laser:
   ld r0, (r7, 18) # apply motor lock
   andn r3, r0
+  ld r0, (r7, 20) # apply the laser inhibit (a resume's laser-off lead)
+  andn r3, r0
   stf r3, 0x2b  # (MD|SZ32|FL) write to GPIO register
 
   # short delay to give the pulse some width (min pulse width is 1.9 microseconds)
@@ -264,10 +289,7 @@ endbyte:
   bt endbyte_done   # ignore if scratch7 == 0
   subi r0, 1        # always decrement, T flag set if result is zero
   st r0, (r7, 31)
-  bf endbyte_done
-  notify 3          # waypoint reached; interrupt the host (notify, not done:
-                    # raise the interrupt without rescheduling the channel, so
-                    # the cut keeps streaming without a scheduling hiccup)
+  bt waypoint_hit   # reached zero: the waypoint action (past the loop)
 
 endbyte_done:
   # if bit 2 in r1 was set, process another byte immediately
@@ -283,9 +305,8 @@ endbyte_done:
 
 restart_relay:
   # Relay hop: "start" is beyond 8-bit branch displacement from the script
-  # tail (the end-of-data handling below grew the script), so the restart
-  # path branches here first. Reachable only by label (the bt above is
-  # always taken).
+  # tail, so the restart path branches here first. Reachable only by label
+  # (the bt above is always taken).
   btsti r1, 0   # always true
   bt start
 
@@ -307,14 +328,21 @@ alldone:
   # Signal end-of-data to the host. scratch6 (direction) is set non-zero by
   # the host before every run; we reuse it as an "already signaled" sentinel.
   # If it is still non-zero, this is the first idle tick since the data ran
-  # out: zero it, reset the re-notify counter, and interrupt the host.
+  # out (alldone_first, past the loop). Otherwise the signal is out already:
+  # self-healing end-of-data signal. Two notifies raised before the ARM
+  # services the first merge into a single host callback, so the end-of-data
+  # notify can be lost by coalescing with a waypoint notify. Re-raise it
+  # every 255 parked iterations until the host stops the EPIT: seldom enough
+  # not to storm the host, often enough that a lost signal heals within a
+  # few ms at the 200 kHz ceiling.
   ld r0, (r7, 30)   # get direction
   cmpeqi r0, 0
-  bt alldone_renotify # already signaled; wait (and periodically re-notify)
-  ldi r0, 0
-  st r0, (r7, 30)   # zero direction (sentinel: end-of-data signaled)
-  ldi r2, 0         # reset idle re-notify counter (r2 is free while parked)
-  notify 3          # interrupt the host (notify, not done: no reschedule)
+  bf alldone_first  # not yet signaled
+  addi r2, 1
+  cmpeqi r2, 255
+  bf alldone_wait
+  ldi r2, 0
+  notify 3
 
 alldone_wait:
   done 4
@@ -354,18 +382,37 @@ power_done:
   bt endbyte    # unconditional jump
 
 
-alldone_renotify:
-  # Self-healing end-of-data signal: two notifies raised before the ARM
-  # services the first merge into a single host callback, so the end-of-data
-  # notify can be lost by coalescing with a waypoint notify. Re-raise it
-  # every 255 parked iterations until the host stops the EPIT: seldom enough
-  # not to storm the host, often enough that a lost signal heals within a
-  # few ms at the 200 kHz ceiling. Placed at the tail to keep all branch
-  # displacements in range.
-  addi r2, 1
-  cmpeqi r2, 255
-  bf alldone_wait
-  ldi r2, 0
-  notify 3
-  btsti r1, 0   # always true
+alldone_first:
+  # The first idle tick since the data ran out: zero the direction
+  # (sentinel: end-of-data signaled), disarm the waypoint counter (no
+  # waypoint fires after the data ends), publish end-of-data in the
+  # mailbox, reset the re-notify counter, and interrupt the host.
+  ldi r0, 0
+  st r0, (r7, 30)   # zero direction
+  st r0, (r7, 31)   # zero the waypoint counter
+  # The mailbox write goes through the burst DMA unit like the GPIO writes:
+  # point its destination at the mailbox word, write 1, then point it back
+  # at the GPIO register (r2 is free while parked; r0 is the temporary).
+  ldf r2, 0x04      # (MDA) save the GPIO register address
+  ld r0, (r7, 21)   # mailbox address
+  stf r0, 0x14      # (MDA|frozen) destination = the mailbox word
+  ldi r0, 1
+  stf r0, 0x2b      # (MD|SZ32|FL) write 1, flushed to memory
+  stf r2, 0x14      # (MDA|frozen) destination = the GPIO register again
+  ldi r2, 0         # reset idle re-notify counter (r2 is free while parked)
+  notify 3          # interrupt the host (notify, not done: no reschedule)
+  btsti r1, 0       # always true
   bt alldone_wait
+
+
+waypoint_hit:
+  # The waypoint counter reached zero on this byte: the laser inhibit ends
+  # here, at the byte boundary, so a resume's lead is exact and no host write
+  # to the GPIO register is needed while the script runs; then interrupt the
+  # host (notify, not done: raise the interrupt without rescheduling the
+  # channel, so the cut keeps streaming without a scheduling hiccup).
+  ldi r0, 0
+  st r0, (r7, 20)
+  notify 3
+  btsti r1, 0       # always true
+  bt endbyte_done

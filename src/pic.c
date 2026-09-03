@@ -43,7 +43,9 @@ extern int pic_enabled;
 #define ENABLE_DEVICE_DETECTION 1
 
 /**
- * Microseconds to wait between each byte transfer.
+ * Microseconds the PIC needs to settle between words (the controller's
+ * inter-word wait states, spi_transfer.word_delay) and after the last word
+ * before the chip select changes (spi_transfer.delay).
  */
 #define TRANSFER_DELAY_USECS  2
 
@@ -64,6 +66,8 @@ int pic_read_one_register(struct spi_device *spi, enum pic_register reg)
   int status;
 
   x.len = sizeof(struct pic_transaction);
+  x.word_delay.value = TRANSFER_DELAY_USECS;
+  x.word_delay.unit = SPI_DELAY_UNIT_USECS;
   x.delay.value = TRANSFER_DELAY_USECS;
   x.delay.unit = SPI_DELAY_UNIT_USECS;
   x.tx_buf = self->txbuf;
@@ -87,6 +91,8 @@ int pic_write_one_register(struct spi_device *spi, enum pic_register reg, pic_va
 
   x.len = sizeof(struct pic_transaction);
   x.tx_buf = self->txbuf;
+  x.word_delay.value = TRANSFER_DELAY_USECS;
+  x.word_delay.unit = SPI_DELAY_UNIT_USECS;
   x.delay.value = TRANSFER_DELAY_USECS;
   x.delay.unit = SPI_DELAY_UNIT_USECS;
 #if VERIFY_WRITES
@@ -133,6 +139,8 @@ int pic_read_register_range(struct spi_device *spi, enum pic_register first_reg,
 
   num_regs = last_reg-first_reg+1;
   x.len = sizeof(struct pic_transaction)*num_regs;
+  x.word_delay.value = TRANSFER_DELAY_USECS;
+  x.word_delay.unit = SPI_DELAY_UNIT_USECS;
   x.delay.value = TRANSFER_DELAY_USECS;
   x.delay.unit = SPI_DELAY_UNIT_USECS;
   x.tx_buf = self->txbuf;
@@ -175,6 +183,8 @@ int pic_write_register_range(struct spi_device *spi, enum pic_register first_reg
 
   x.len = sizeof(struct pic_transaction)*num_regs;
   x.tx_buf = self->txbuf;
+  x.word_delay.value = TRANSFER_DELAY_USECS;
+  x.word_delay.unit = SPI_DELAY_UNIT_USECS;
   x.delay.value = TRANSFER_DELAY_USECS;
   x.delay.unit = SPI_DELAY_UNIT_USECS;
 #if VERIFY_WRITES
@@ -235,6 +245,8 @@ int pic_write_data(struct spi_device *spi, const void *buf, size_t count)
   if (count > MAX_REGISTERS_PER_TRANSFER*sizeof(struct pic_transaction)) { return -E2BIG; }
 
   x.len = count;
+  x.word_delay.value = TRANSFER_DELAY_USECS;
+  x.word_delay.unit = SPI_DELAY_UNIT_USECS;
   x.delay.value = TRANSFER_DELAY_USECS;
   x.delay.unit = SPI_DELAY_UNIT_USECS;
   x.tx_buf = self->txbuf;

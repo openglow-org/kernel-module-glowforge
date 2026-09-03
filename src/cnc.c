@@ -33,6 +33,7 @@
 #include "sdma_macros.h"
 
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
@@ -162,6 +163,22 @@ static void _cnc_ramp_stop(struct cnc *self);
 static void beam_detect_latch_reset(struct cnc *self);
 static void toggle_charge_pump(struct cnc *self);
 
+/*
+ * Channel context words the script uses as plain storage: words 20 and 21
+ * (dda and dsa in the context struct) are reserved on the i.MX6 SDMA, with
+ * no functional unit behind them, so they are context RAM and nothing
+ * else. The script reads them by offset, (r7, 20) and (r7, 21).
+ */
+#define SDMA_CTX_LASER_INHIBIT dda  /* GPIO bits the script masks out until its waypoint */
+#define SDMA_CTX_MAILBOX_ADDR  dsa  /* physical address of the end-of-data mailbox */
+
+/* The laser pins as GPIO port bits: what a resume's lead inhibits. */
+static u32 laser_inhibit_bits(struct cnc *self)
+{
+  return (1 << PIN_FROM_GPIO(self->gpios[PIN_LASER_ON])) |
+         (1 << PIN_FROM_GPIO(self->gpios[PIN_LASER_ON_HEAD]));
+}
+
 static int load_sdma_script(struct cnc *self)
 {
   int ret;
@@ -181,6 +198,8 @@ static int load_sdma_script(struct cnc *self)
     .mda = io_base_address(self->gpios, NUM_GPIO_PINS, cnc_sdma_pin_set),
     .ms = 0x00000000, /* source and destination address frozen; start in read mode */
     .ps = 0x000c0400, /* destination address frozen; 32-bit write size; start in write mode */
+    .SDMA_CTX_LASER_INHIBIT = 0,
+    .SDMA_CTX_MAILBOX_ADDR = self->sdma_mailbox_phys,
     .scratch6 = 1,    /* direction = forward */
   };
 
@@ -380,7 +399,6 @@ static void _driver_stop(struct cnc *self, enum cnc_state next_state)
   /* Clear run-scoped flags so nothing stale leaks into the next run. */
   self->status.waypoint_armed = false;
   self->status.decel_on_interrupt = false;
-  self->status.enable_laser_on_interrupt = false;
   self->status.running_backward = false;
 
   /* Drive the outputs to their safe state. The 40 V supply itself is NOT
@@ -409,8 +427,6 @@ static void _driver_stop(struct cnc *self, enum cnc_state next_state)
  */
 static void _cnc_ramp_start(struct cnc *self)
 {
-  /* Disable DMA control of laser enable; force the line low. */
-  gpio_direction_input(self->gpios[PIN_LASER_ON]);
   /* Begin periodic updates */
   hrtimer_start(&self->ramp_timer, ramp_update_interval_ktime, HRTIMER_MODE_REL_SOFT);
 }
@@ -448,6 +464,11 @@ static void _cnc_decel_start(struct cnc *self)
   }
   self->status.accelerating = false;
   self->status.decelerating = true;
+  /* A controlled stop consumes the remaining bytes at falling speed with
+   * the FIRE line parked Hi-Z: their fire bits, played slowly, would burn
+   * deeper at the stop point. This changes the direction register only;
+   * the data register stays the script's. */
+  gpio_direction_input(self->gpios[PIN_LASER_ON]);
   _cnc_ramp_start(self);
 }
 
@@ -529,54 +550,48 @@ static enum hrtimer_restart ramp_update_tasklet_fn(struct hrtimer *timer)
  * (via a "notify 3" instruction, at a waypoint or at end-of-data).
  * This callback executes in tasklet context.
  *
- * Signal decoding uses only host-side state (never a channel context fetch,
- * which may sleep): if a waypoint is outstanding, the signal is the waypoint;
- * otherwise it is end-of-data. Two notifies raised before the ARM services
- * the first merge into ONE callback, so a coalesced waypoint+end-of-data
- * signal is decoded as just the waypoint here; the script re-raises the
- * end-of-data interrupt every ~255 parked iterations until we stop the EPIT,
- * so the lost half is redelivered shortly.
+ * The two signals share one interrupt line, and this callback may not fetch
+ * the channel context (a channel-0 transfer, which sleeps). The script tells
+ * them apart for us: it writes 1 to the end-of-data mailbox before it raises
+ * the end-of-data interrupt and never touches the mailbox for a waypoint;
+ * run start clears the mailbox. Two notifies raised before the ARM services
+ * the first merge into ONE callback, and a merged waypoint+end-of-data reads
+ * as end-of-data here, which is the one that matters: the run is over and
+ * its waypoint action is moot.
  */
 static void cnc_sdma_interrupt(void *param)
 {
   struct cnc *self = (struct cnc *)param;
   spin_lock_bh(&self->status_lock);
-  if (unlikely(self->status.waypoint_armed)) {
-    /* Waypoint reached (scratch7 hit zero). Consume the armed actions. */
-    self->status.waypoint_armed = false;
-    if (self->status.enable_laser_on_interrupt) {
-      /* Re-enable SDMA control of the laser line (end of a resume ramp)
-       * - gated on the laser latch exactly like a run start: a locked
-       * latch means the run stays laser-less, waypoint or no waypoint. */
-      self->status.enable_laser_on_interrupt = false;
-      if (gpio_get_value(self->gpios[PIN_LASER_LATCH_RESET]) == 0) {
-        gpio_direction_output(self->gpios[PIN_LASER_ON], 0);
-      }
-    }
-    if (self->status.decel_on_interrupt) {
-      /* Start the controlled deceleration (end of a backtrack). */
-      self->status.decel_on_interrupt = false;
-      _cnc_decel_start(self);
-    }
-  }
-  else if (self->status.state == STATE_RUNNING) {
+  if (READ_ONCE(*self->sdma_mailbox) != 0) {
     /* End of data: normal completion, or an underrun, if a streaming
      * feeder declared itself. The stop is laser-safe either way (the script
      * forces the laser/step lines low at end-of-data before signaling);
      * an underrun additionally means steps may have been skipped at speed,
-     * so the position counters can no longer be trusted. */
-    if (unlikely(self->status.streaming)) {
-      self->underrun_count++;
-      dev_warn(self->dev, "pulse data underrun (#%u); position no longer trusted",
-        self->underrun_count);
-      _driver_stop(self, STATE_UNDERRUN);
-    } else {
-      _driver_stop(self, STATE_IDLE);
+     * so the position counters can no longer be trusted. A re-notify that
+     * lands after we already stopped (or a fault/halt stopped us first) is
+     * ignored rather than clobbering the current state. */
+    if (self->status.state == STATE_RUNNING) {
+      if (unlikely(self->status.streaming)) {
+        self->underrun_count++;
+        dev_warn(self->dev, "pulse data underrun (#%u); position no longer trusted",
+          self->underrun_count);
+        _driver_stop(self, STATE_UNDERRUN);
+      } else {
+        _driver_stop(self, STATE_IDLE);
+      }
     }
   }
-  /* else: a stale re-notify delivered after we already stopped (end-of-data
-   * plus a queued re-notify, or a fault/halt stopped us first). Ignore it
-   * rather than clobbering the current state. */
+  else if (self->status.waypoint_armed) {
+    /* Waypoint reached (scratch7 hit zero). The script has already ended a
+     * resume's laser inhibit at the waypoint byte; the host's part is the
+     * controlled deceleration at the end of a backtrack. */
+    self->status.waypoint_armed = false;
+    if (self->status.decel_on_interrupt) {
+      self->status.decel_on_interrupt = false;
+      _cnc_decel_start(self);
+    }
+  }
   spin_unlock_bh(&self->status_lock);
 }
 
@@ -631,6 +646,7 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
 
   if (need_to_start) {
     uint32_t regs[3];
+    u32 laser_inhibit;
     uint32_t num_steps = opts.num_steps;
     bool was_powered;
     /* Every stop bumps this; the commit below refuses if it moved. */
@@ -694,6 +710,25 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
       mutex_unlock(&self->pulsebuf_lock);
       return ret;
     }
+    /* The resume lead: an accelerating forward run plays laser-less until
+     * its waypoint, and the script owns that. It masks the laser bits out
+     * of every GPIO word it writes until the waypoint byte clears the
+     * mask, so the host never touches the GPIO data register while the
+     * script runs (a host write goes through gpiolib's shadow of the
+     * register and would clobber the script's direction and step bits
+     * mid-byte). A resume with no waypoint stays laser-less for the whole
+     * run. Written on every run, so a ramp stopped short of its waypoint
+     * leaves nothing behind for the next one. */
+    laser_inhibit = (opts.accelerate && !opts.backward) ? laser_inhibit_bits(self) : 0;
+    ret = sdma_set_reg(self->sdmac, &laser_inhibit, SDMA_CTX_LASER_INHIBIT);
+    if (ret) {
+      dev_err(self->dev, "failed to set the laser inhibit");
+      mutex_unlock(&self->pulsebuf_lock);
+      return ret;
+    }
+    /* The end-of-data mailbox starts clear; the script sets it once the
+     * data runs out, before it signals. */
+    WRITE_ONCE(*self->sdma_mailbox, 0);
 
     /* Power the steppers and reset the laser PWM duty BEFORE taking the
      * status lock: regulator and PWM operations may sleep (regulator rdev
@@ -723,23 +758,21 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
       dev_err(self->dev, "run refused: the driver was stopped while starting");
       ret = -EPERM;
     } else {
-      /* The waypoint action flags are only meaningful when a waypoint is
-       * actually armed (num_steps > 0): scratch7 == 0 never fires, and a
-       * stale action flag would eat the end-of-data signal, wedging the
-       * driver in RUNNING. */
+      /* The waypoint action is only meaningful when a waypoint is
+       * actually armed (num_steps > 0): scratch7 == 0 never fires. */
       bool waypoint_armed = (num_steps > 0);
       self->status.state = STATE_RUNNING;
       self->status.waypoint_armed = waypoint_armed;
       self->status.decel_on_interrupt = opts.decelerate && waypoint_armed;
-      self->status.enable_laser_on_interrupt =
-        (opts.accelerate && !opts.backward && waypoint_armed);
       self->status.running_backward = opts.backward;
 
       /* _driver_stop parks the FIRE line Hi-Z at every stop; if the
-       * latch is unlocked, restore SDMA drive for this run. A resume
-       * ramp keeps it parked until its waypoint re-enables it. */
-      if (!self->status.enable_laser_on_interrupt &&
-          gpio_get_value(self->gpios[PIN_LASER_LATCH_RESET]) == 0) {
+       * latch is unlocked, restore SDMA drive for this run now, while
+       * the script is idle: the restore writes the whole GPIO data
+       * register from gpiolib's shadow, which must never land while the
+       * script is mid-byte. A resume's laser-off lead is the script's
+       * inhibit mask, set above. */
+      if (gpio_get_value(self->gpios[PIN_LASER_LATCH_RESET]) == 0) {
         gpio_direction_output(self->gpios[PIN_LASER_ON], 0);
       }
 
@@ -1110,10 +1143,10 @@ int cnc_set_laser_latch(struct cnc *self, int value)
      * ramp is in flight: a controlled stop keeps consuming pulse bytes
      * with the FIRE line parked Hi-Z, and restoring drive here would
      * play the remaining fire bits at reduced speed (a deeper burn at
-     * the stop point). Run start (and the resume waypoint) restore the
-     * drive themselves when the latch is unlocked. The lock also keeps
-     * this write from racing _driver_stop into an idle state with FIRE
-     * left driven. */
+     * the stop point). Run start restores the drive itself when the
+     * latch is unlocked; a resume's laser-off lead is the script's own
+     * inhibit mask. The lock also keeps this write from racing
+     * _driver_stop into an idle state with FIRE left driven. */
     if (self->status.state != STATE_RUNNING &&
         !self->status.accelerating && !self->status.decelerating) {
       gpio_direction_output(self->gpios[PIN_LASER_ON], 0);
@@ -1613,6 +1646,17 @@ int cnc_probe(struct platform_device *pdev)
   self->status.state = STATE_IDLE;
 #endif
 
+  /* The end-of-data mailbox: one coherent word the script writes and the
+   * interrupt callback reads. Allocated before the dedicated pool is
+   * attached, so it comes from the general coherent allocator and the
+   * pool stays the ring's alone. */
+  self->sdma_mailbox = dma_alloc_coherent(self->dev, sizeof(*self->sdma_mailbox),
+    &self->sdma_mailbox_phys, GFP_KERNEL);
+  if (!self->sdma_mailbox) {
+    ret = -ENOMEM;
+    goto failed_mailbox_alloc;
+  }
+
   /*
    * Attach a dedicated coherent DMA pool if the DT provides one (a
    * memory-region -> non-reusable shared-dma-pool). The pulse ring is too
@@ -1843,6 +1887,9 @@ failed_io_init:
   cnc_buffer_destroy(self);
 failed_buffer_init:
   of_reserved_mem_device_release(self->dev);
+  dma_free_coherent(self->dev, sizeof(*self->sdma_mailbox), self->sdma_mailbox,
+    self->sdma_mailbox_phys);
+failed_mailbox_alloc:
   return ret;
 }
 
@@ -1882,6 +1929,8 @@ void cnc_remove(struct platform_device *pdev)
   io_release_gpios(self->gpios, NUM_GPIO_PINS);
   cnc_buffer_destroy(self);
   of_reserved_mem_device_release(self->dev);
+  dma_free_coherent(self->dev, sizeof(*self->sdma_mailbox), self->sdma_mailbox,
+    self->sdma_mailbox_phys);
   tasklet_kill(&self->fault_tasklet);
   /* Last: nothing above may touch the engine once its clocks are released. */
   sdma_put_channel(self->sdmac);

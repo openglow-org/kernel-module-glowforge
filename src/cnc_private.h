@@ -367,11 +367,10 @@ struct cnc_status {
   unsigned int decelerating:1; /* 1 if currently decelerating */
   unsigned int accelerating:1; /* 1 if currently accelerating */
   unsigned int decel_on_interrupt:1; /* if 1, start decel on SDMA waypoint interrupt */
-  unsigned int enable_laser_on_interrupt:1; /* if 1, enable laser on SDMA waypoint interrupt */
   unsigned int waypoint_armed:1; /* if 1, a waypoint interrupt (scratch7) is outstanding */
   unsigned int running_backward:1; /* if 1, the current run consumes the ring backward */
   unsigned int streaming:1; /* if 1, a feeder declared live streaming: end-of-data is an underrun */
-  unsigned int reserved:9;
+  unsigned int reserved:10;
 } __attribute__((packed));
 
 
@@ -423,6 +422,16 @@ struct cnc {
   struct sdma_engine *sdma;
   /** Pointer to the SDMA channel used by the driver. */
   struct sdma_channel *sdmac;
+  /**
+   * The end-of-data mailbox: one coherent word the script sets before it
+   * raises its end-of-data interrupt, and run start clears. The waypoint
+   * and end-of-data interrupts share one line, and the callback may not
+   * sleep, so it cannot fetch the channel context; this word is how it
+   * tells the two apart. The script holds the physical address in a
+   * reserved context word.
+   */
+  u32 *sdma_mailbox;
+  dma_addr_t sdma_mailbox_phys;
   /** The current state of the driver. */
   volatile struct cnc_status status;
   /** Number of streaming underruns since module load (see status.streaming). */
