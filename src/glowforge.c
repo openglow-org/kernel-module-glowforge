@@ -2,7 +2,8 @@
 /**
  * Glowforge kernel module
  *
- * Copyright (C) 2020-2026 Scott Wiederhold <s.e.wiederhold@gmail.com>
+ * Copyright 2020-2026 514 LLC d/b/a OpenGlow
+ * Written by Scott Wiederhold
  * Copyright (C) 2015-2021 Glowforge, Inc. <opensource@glowforge.com>
  * Written by Matt Sarnoff with contributions from Taylor Vaughn.
  *

@@ -19,7 +19,8 @@
  *   - the dead stop is the start of the job while the job fits the ring,
  *     and one ring back once a live feed has wrapped it.
  *
- * Copyright (C) 2026 Scott Wiederhold <s.e.wiederhold@gmail.com>
+ * Copyright 2026 514 LLC d/b/a OpenGlow
+ * Written by Scott Wiederhold
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

@@ -34,7 +34,8 @@
  * The arithmetic is kept free of kernel dependencies so the host test can
  * pin it.
  *
- * Copyright (C) 2026 Scott Wiederhold <s.e.wiederhold@gmail.com>
+ * Copyright 2026 514 LLC d/b/a OpenGlow
+ * Written by Scott Wiederhold
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
