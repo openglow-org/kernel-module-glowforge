@@ -26,3 +26,6 @@ retained unchanged.
 
 Every file under src/ carries an SPDX-License-Identifier line
 (GPL-2.0-or-later); LICENSE holds the GPL version 2 text.
+
+Glowforge is a trademark of Glowforge, Inc. This project is not affiliated
+with, authorized by, or endorsed by Glowforge, Inc.
