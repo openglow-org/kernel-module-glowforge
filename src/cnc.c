@@ -658,8 +658,9 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
      * whose run was refused while the engine still played a tail keeps the
      * request and makes it again once the engine is idle, and by then the
      * engine has usually played the bytes as a continuation of that tail.
-     * That happens at most job ends, so the refusal logs at debug level; a
-     * feeder that did not expect it reports it itself. */
+     * That happens at most job ends, so the refusal logs at debug level.
+     * A head sync that fails also reads as an empty ring here, and it
+     * logs its own error first (cnc_buffer_sync_head). */
     if (cnc_buffer_is_empty(self)) {
       dev_dbg(self->dev, "run requested with no data enqueued");
       return -ENODATA;
