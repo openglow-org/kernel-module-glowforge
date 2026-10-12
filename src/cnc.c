@@ -654,12 +654,14 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
     unsigned int stop_gen = READ_ONCE(self->stop_generation);
 
     /* Ensure there is enough data enqueued. (may sleep) A run request on an
-     * empty ring is refused with -ENODATA and logged: a feeder asks for a run
-     * right after queueing bytes, so head == tail here means either a feeder
-     * defect or an engine that is not moving data (a head sync that reads
-     * back stale), never routine. */
+     * empty ring is refused with -ENODATA, which is the answer: a live feeder
+     * whose run was refused while the engine still played a tail keeps the
+     * request and makes it again once the engine is idle, and by then the
+     * engine has usually played the bytes as a continuation of that tail.
+     * That happens at most job ends, so the refusal logs at debug level; a
+     * feeder that did not expect it reports it itself. */
     if (cnc_buffer_is_empty(self)) {
-      dev_err(self->dev, "run requested with no data enqueued");
+      dev_dbg(self->dev, "run requested with no data enqueued");
       return -ENODATA;
     }
 
