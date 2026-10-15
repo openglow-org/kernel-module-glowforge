@@ -54,6 +54,8 @@ struct cnc;
  *
  * @return 0 on success
  *         -ENODATA if there is no pulse data enqueued,
+ *         -EIO if the engine's play position is unreadable (the ring's
+ *         state is unknown),
  *         -EPERM if the driver is already running, or in the fault state.
  *
  * @note No operation is performed if the driver is already running.
@@ -91,6 +93,8 @@ int cnc_halt(struct cnc *self);
  *                  than quietly shortened
  *                  -EINVAL if num_steps == 0
  *                  -ENODATA if the ring holds nothing unplayed
+ *                  -EIO if the engine's play position is unreadable (the
+ *                  ring's state is unknown)
  */
 int cnc_backtrack(struct cnc *self, uint32_t num_steps);
 
@@ -103,6 +107,8 @@ int cnc_backtrack(struct cnc *self, uint32_t num_steps);
  * @return                  0 on success
  *                          -EPERM if the driver is not in the IDLE state
  *                          -ENODATA if there is no pulse data enqueued
+ *                          -EIO if the engine's play position is
+ *                          unreadable (the ring's state is unknown)
  *
  * @note If num_steps is 0, a controlled acceleration is performed, but the
  *       laser is never re-enabled.
@@ -309,10 +315,12 @@ uint32_t cnc_buffer_fifo_bitmask(struct cnc *self);
 uint32_t cnc_buffer_fifo_start_phys(struct cnc *self);
 
 /**
- * Returns nonzero if the pulse data buffer is empty.
+ * The run-start gate: 0 if the pulse data buffer holds unplayed data,
+ * -ENODATA if it is empty, -EIO if the engine's play position is unreadable.
+ * Any nonzero answer refuses a run.
  * May sleep; not safe to call from atomic context.
  */
-int cnc_buffer_is_empty(struct cnc *self);
+int cnc_buffer_run_gate(struct cnc *self);
 
 /**
  * Returns the number of bytes available in the pulse data buffer.

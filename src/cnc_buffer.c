@@ -89,7 +89,7 @@ void cnc_buffer_destroy(struct cnc *self)
  * Synchronizes the current head value from the SDMA engine to the kfifo.
  * Should be called before any operation that requires querying the amount of
  * free space in the fifo.
- * Performed by cnc_buffer_is_empty() and cnc_buffer_add_user_data().
+ * Performed by cnc_buffer_run_gate() and cnc_buffer_add_user_data().
  * May sleep.
  * Returns nonzero if there was an error reading the SDMA channel context.
  */
@@ -212,14 +212,14 @@ int cnc_buffer_clear(struct cnc *self, unsigned int flags)
 }
 
 /* may sleep */
-int cnc_buffer_is_empty(struct cnc *self)
+int cnc_buffer_run_gate(struct cnc *self)
 {
-  /* A failed head fetch must not let the run-start "no data" gate
-   * decide on a stale index: report empty, which refuses the run. */
-  if (cnc_buffer_sync_head(self)) {
-    return 1;
-  }
-  return kfifo_is_empty(&self->pulsebuf_fifo);
+  /* 0 when the ring holds unplayed data, -ENODATA when it holds none,
+   * -EIO when the play position is unreadable (the sync logs the error).
+   * An unreadable ring is never an empty one, and a stale index decides
+   * nothing (cnc_run_gate_errno). */
+  int ret = cnc_buffer_sync_head(self);
+  return cnc_run_gate_errno(ret, !ret && kfifo_is_empty(&self->pulsebuf_fifo));
 }
 
 /* may sleep */

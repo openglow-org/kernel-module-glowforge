@@ -659,11 +659,15 @@ static int cnc_run_with_options(struct cnc *self, struct cnc_run_options opts)
      * request and makes it again once the engine is idle, and by then the
      * engine has usually played the bytes as a continuation of that tail.
      * That happens at most job ends, so the refusal logs at debug level.
-     * A head sync that fails also reads as an empty ring here, and it
-     * logs its own error first (cnc_buffer_sync_head). */
-    if (cnc_buffer_is_empty(self)) {
-      dev_dbg(self->dev, "run requested with no data enqueued");
-      return -ENODATA;
+     * A head sync that fails is refused with -EIO instead, never as an
+     * empty ring: the feeder takes -ENODATA at idle for bytes it already
+     * played. The sync logs the fetch's error (cnc_buffer_sync_head). */
+    ret = cnc_buffer_run_gate(self);
+    if (ret) {
+      if (ret == -ENODATA) {
+        dev_dbg(self->dev, "run requested with no data enqueued");
+      }
+      return ret;
     }
 
     /* Ensure the SDMA program RAM is intact before starting. (may sleep) */

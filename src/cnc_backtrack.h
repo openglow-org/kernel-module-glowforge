@@ -32,7 +32,8 @@
  * it down.
  *
  * The arithmetic is kept free of kernel dependencies so the host test can
- * pin it.
+ * pin it. The run-start gate's answer from what the ring reports lives here
+ * for the same reason.
  *
  * Copyright 2026 514 LLC d/b/a OpenGlow
  * Written by Scott Wiederhold
@@ -55,10 +56,32 @@
 #define KERNEL_SRC_CNC_BACKTRACK_H_
 
 #ifdef __KERNEL__
+#include <linux/errno.h>
 #include <linux/types.h>
 #else
+#include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #endif
+
+/**
+ * The run-start gate's answer from what the ring reports. @sync_err is the
+ * head sync's return (0 when the play position was read), @empty whether the
+ * ring then holds nothing unplayed. An unreadable ring is never an empty
+ * one: a feeder takes -ENODATA at idle for bytes it already played and then
+ * leaves what it shipped in the ring for the next run, so a failed sync
+ * refuses the run as its own fault, -EIO.
+ */
+static inline int cnc_run_gate_errno(int sync_err, bool empty)
+{
+  if (sync_err) {
+    return -EIO;
+  }
+  if (empty) {
+    return -ENODATA;
+  }
+  return 0;
+}
 
 /**
  * Steps consumed by a controlled deceleration from @step_freq (Hz) at

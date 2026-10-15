@@ -2,11 +2,11 @@
 /*
  * backtrack_test.c
  *
- * Host-side test for the bounds of a backward run over the pulse ring
- * (src/cnc_backtrack.h). A pause walks the program backward with the laser
- * off so the resume can lead back up to the pause point over material the
- * job already cut, and these bounds are what keep that walk on genuine data.
- * The cases pin:
+ * Host-side test for the bounds of a backward run over the pulse ring and
+ * the run-start gate's answer (src/cnc_backtrack.h). A pause walks the
+ * program backward with the laser off so the resume can lead back up to the
+ * pause point over material the job already cut, and these bounds are what
+ * keep that walk on genuine data. The cases pin:
  *
  *   - only played bytes are backtrackable (a job that has not played yet
  *     has no history, however much of it has been enqueued);
@@ -17,7 +17,10 @@
  *   - the deceleration tail is held back, so a run that is allowed always
  *     ramps down instead of hitting the dead stop;
  *   - the dead stop is the start of the job while the job fits the ring,
- *     and one ring back once a live feed has wrapped it.
+ *     and one ring back once a live feed has wrapped it;
+ *   - the run-start gate answers -ENODATA for a readable empty ring and
+ *     -EIO for a ring whose play position is unreadable, never -ENODATA
+ *     for the latter.
  *
  * Copyright 2026 514 LLC d/b/a OpenGlow
  * Written by Scott Wiederhold
@@ -187,6 +190,18 @@ static void test_allowed_run_fits_the_history(void)
   CHECK(PAUSE_TICKS + print_tail() <= history);
 }
 
+/* The run-start gate: a readable ring with data runs; a readable empty ring
+ * answers -ENODATA; a ring whose play position is unreadable answers -EIO
+ * whatever the stale index says, never -ENODATA. */
+static void test_run_gate_unreadable_is_not_empty(void)
+{
+  CHECK(cnc_run_gate_errno(0, false) == 0);
+  CHECK(cnc_run_gate_errno(0, true) == -ENODATA);
+  CHECK(cnc_run_gate_errno(-ETIMEDOUT, true) == -EIO);
+  CHECK(cnc_run_gate_errno(-ETIMEDOUT, false) == -EIO);
+  CHECK(cnc_run_gate_errno(-ENOMEM, true) != -ENODATA);
+}
+
 int main(void)
 {
   test_decel_tail();
@@ -200,6 +215,7 @@ int main(void)
   test_no_history();
   test_dead_stop_span();
   test_allowed_run_fits_the_history();
+  test_run_gate_unreadable_is_not_empty();
 
   if (failures) {
     fprintf(stderr, "backtrack_test: %d check(s) failed\n", failures);
