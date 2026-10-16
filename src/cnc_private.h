@@ -90,11 +90,13 @@ int cnc_halt(struct cnc *self);
  *                  -EPERM if the driver is not in the IDLE state, or if
  *                  num_steps exceeds what the ring still holds played and
  *                  genuine (max_backtrack): a request is refused rather
- *                  than quietly shortened
+ *                  than quietly shortened. A play position that is
+ *                  unreadable at that bound reads as no history, so the
+ *                  request is refused with -EPERM too
  *                  -EINVAL if num_steps == 0
  *                  -ENODATA if the ring holds nothing unplayed
- *                  -EIO if the engine's play position is unreadable (the
- *                  ring's state is unknown)
+ *                  -EIO if the run gate cannot read the engine's play
+ *                  position (the ring's state is unknown)
  */
 int cnc_backtrack(struct cnc *self, uint32_t num_steps);
 
