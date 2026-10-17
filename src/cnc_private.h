@@ -56,7 +56,12 @@ struct cnc;
  *         -ENODATA if there is no pulse data enqueued,
  *         -EIO if the engine's play position is unreadable (the ring's
  *         state is unknown),
- *         -EPERM if the driver is already running, or in the fault state.
+ *         -EPERM if the driver is in neither the IDLE nor the DISABLED
+ *         state (from DISABLED the start powers the steppers on), or if
+ *         a stop or a fault occurs while the start runs,
+ *         -ETIMEDOUT if a channel-0 transfer times out at the script
+ *         check or reload, or at a context load (the SDMA driver's
+ *         error, returned as is).
  *
  * @note No operation is performed if the driver is already running.
  */
@@ -87,16 +92,22 @@ int cnc_halt(struct cnc *self);
  *
  * @param num_steps Number of steps to run before decelerating
  * @return          0 on success
- *                  -EPERM if the driver is not in the IDLE state, or if
- *                  num_steps exceeds what the ring still holds played and
- *                  genuine (max_backtrack): a request is refused rather
- *                  than quietly shortened. A play position that is
- *                  unreadable at that bound reads as no history, so the
- *                  request is refused with -EPERM too
+ *                  -EPERM if the driver is in neither the IDLE nor the
+ *                  DISABLED state (from DISABLED the start powers the
+ *                  steppers on), if a stop or a fault occurs while the
+ *                  start runs, or if num_steps exceeds what the ring
+ *                  still holds played and genuine (max_backtrack): a
+ *                  request is refused rather than quietly shortened. A
+ *                  play position that is unreadable at that bound reads
+ *                  as no history, so the request is refused with -EPERM
+ *                  too
  *                  -EINVAL if num_steps == 0
  *                  -ENODATA if the ring holds nothing unplayed
  *                  -EIO if the run gate cannot read the engine's play
  *                  position (the ring's state is unknown)
+ *                  -ETIMEDOUT if a channel-0 transfer times out at the
+ *                  script check or reload, or at a context load (the
+ *                  SDMA driver's error, returned as is)
  */
 int cnc_backtrack(struct cnc *self, uint32_t num_steps);
 
@@ -107,10 +118,16 @@ int cnc_backtrack(struct cnc *self, uint32_t num_steps);
  *
  * @param laser_delay_steps Number of steps to run before re-enabling laser
  * @return                  0 on success
- *                          -EPERM if the driver is not in the IDLE state
+ *                          -EPERM if the driver is in neither the IDLE
+ *                          nor the DISABLED state (from DISABLED the
+ *                          start powers the steppers on), or if a stop or
+ *                          a fault occurs while the start runs
  *                          -ENODATA if there is no pulse data enqueued
  *                          -EIO if the engine's play position is
  *                          unreadable (the ring's state is unknown)
+ *                          -ETIMEDOUT if a channel-0 transfer times out
+ *                          at the script check or reload, or at a context
+ *                          load (the SDMA driver's error, returned as is)
  *
  * @note If num_steps is 0, a controlled acceleration is performed, but the
  *       laser is never re-enabled.
