@@ -156,17 +156,10 @@ int head_probe(struct i2c_client *client)
     goto failed_head_init;
   }
 
-  /* Configure head */
-  ret = i2c_smbus_write_word_data(client, HEAD_REG_LAMBDA_K, 0x07ae);
-  if (ret < 0) goto failed_head_init;
-  ret = i2c_smbus_write_word_data(client, HEAD_REG_LAMBDA_T, 0x1999);
-  if (ret < 0) goto failed_head_init;
-  ret = i2c_smbus_write_word_data(client, HEAD_REG_THETA_R, 0x0020);
-  if (ret < 0) goto failed_head_init;
-  ret = i2c_smbus_write_word_data(client, HEAD_REG_THETA_T, 0x0028);
-  if (ret < 0) goto failed_head_init;
-  ret = i2c_smbus_write_word_data(client, HEAD_REG_E_T, 0x0060);
-  if (ret < 0) goto failed_head_init;
+  /* The beam detector's coefficients are left as the head's firmware sets
+   * them: each firmware version has its own defaults, and they shape only
+   * the head's own verdict and baseline, never the reading published as
+   * beam_detect_analog. */
 
   /* Create sysfs attributes */
   ret = sysfs_create_group(&client->dev.kobj, &head_attr_group);

@@ -72,6 +72,13 @@
 #define HEAD_REG_PURGE_AIR_CUR 0x14
 #define HEAD_REG_BEAM_DET_ANA 0x16
 
+/* The head MCU's DAC; register 6 bit 1 (z_current) sets it too. */
+#define HEAD_REG_DAC 0x1e
+/* The beam detector's samples in its last averaging window, and its own
+ * baseline. */
+#define HEAD_REG_BEAM_SAMPLES 0x2c
+#define HEAD_REG_BEAM_BASELINE 0x2e
+
 
 struct head_data {
         /** Device that owns this data */

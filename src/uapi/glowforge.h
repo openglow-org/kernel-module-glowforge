@@ -121,6 +121,11 @@
 #define ATTR_ACCEL_IRQ            accel_irq
 #define ATTR_BEAM_DETECT_DIGITAL  beam_detect_digital
 #define ATTR_BEAM_DETECT_ANALOG   beam_detect_analog
+#define ATTR_BEAM_SAMPLES         beam_samples
+#define ATTR_BEAM_BASELINE        beam_baseline
+#define ATTR_BEAM_COEFFS          beam_coeffs
+#define ATTR_HEAD_FLAGS           flags
+#define ATTR_HEAD_DAC             dac
 #define ATTR_AIR_ASSIST_PWM       air_assist_pwm
 #define ATTR_AIR_ASSIST_TACH      air_assist_tach
 #define ATTR_WHITE_LED            white_led

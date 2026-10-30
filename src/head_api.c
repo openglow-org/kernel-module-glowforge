@@ -119,6 +119,42 @@ static ssize_t info_show(struct device *dev, struct device_attribute *attr, char
 static DEVICE_ATTR(info, S_IRUSR, info_show, NULL);
 
 
+/* The beam detector's five coefficients as the head holds them (its
+ * firmware's own; head.c leaves them alone), as four-digit hex. */
+static ssize_t beam_coeffs_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+  struct i2c_client *client = to_i2c_client(dev);
+  static const int regs[] = {
+    HEAD_REG_LAMBDA_K, HEAD_REG_LAMBDA_T, HEAD_REG_THETA_R, HEAD_REG_THETA_T, HEAD_REG_E_T,
+  };
+  int v[ARRAY_SIZE(regs)];
+  size_t i;
+
+  for (i = 0; i < ARRAY_SIZE(regs); i++) {
+    v[i] = head_read_i2c_word(client, regs[i]);
+    if (v[i] < 0)
+      return v[i];
+  }
+  return scnprintf(buf, PAGE_SIZE, "%04x %04x %04x %04x %04x\n", v[0], v[1], v[2], v[3], v[4]);
+}
+static DEVICE_ATTR(beam_coeffs, S_IRUSR, beam_coeffs_show, NULL);
+
+
+static ssize_t head_read_byte_ascii(struct device *dev, int reg, char *buf)
+{
+  struct i2c_client *client = to_i2c_client(dev);
+  int value = head_read_i2c_byte(client, reg);
+  if (value < 0)
+    return value;
+  return scnprintf(buf, PAGE_SIZE, "%d\n", value);
+}
+
+
+#define DEFINE_HEAD_RO_BYTE_ATTR(name, reg) \
+  static ssize_t name##_show(struct device *dev, struct device_attribute *attr, char *buf) { \
+    return head_read_byte_ascii(dev, reg, buf); } \
+  static DEVICE_ATTR(name, S_IRUSR, name##_show, NULL)
+
 #define DEFINE_HEAD_RO_BOOL_ATTR(name, reg, bit) \
   static ssize_t name##_show(struct device *dev, struct device_attribute *attr, char *buf) { \
     return head_read_bit_ascii(dev, reg, bit, buf); } \
@@ -158,6 +194,10 @@ DEFINE_HEAD_RW_BOOL_ATTR(ATTR_PURGE_AIR, HEAD_REG_RW_GRP, HEAD_REG_RW_PURGE_AIR)
 DEFINE_HEAD_RO_DWORD_ATTR(ATTR_AIR_ASSIST_TACH, HEAD_REG_AIR_ASSIST_TACH);
 DEFINE_HEAD_RO_DWORD_ATTR(ATTR_PURGE_CURRENT, HEAD_REG_PURGE_AIR_CUR);
 DEFINE_HEAD_RO_DWORD_ATTR(ATTR_BEAM_DETECT_ANALOG, HEAD_REG_BEAM_DET_ANA);
+DEFINE_HEAD_RO_DWORD_ATTR(ATTR_BEAM_SAMPLES, HEAD_REG_BEAM_SAMPLES);
+DEFINE_HEAD_RO_DWORD_ATTR(ATTR_BEAM_BASELINE, HEAD_REG_BEAM_BASELINE);
+DEFINE_HEAD_RO_DWORD_ATTR(ATTR_HEAD_DAC, HEAD_REG_DAC);
+DEFINE_HEAD_RO_BYTE_ATTR(ATTR_HEAD_FLAGS, HEAD_REG_RO_GRP);
 
 DEFINE_HEAD_RW_DWORD_ATTR(ATTR_AIR_ASSIST_PWM, HEAD_REG_AIR_ASSIST_PWM);
 DEFINE_HEAD_RW_DWORD_ATTR(ATTR_WHITE_LED, HEAD_REG_WHITE_LED);
@@ -176,6 +216,11 @@ static struct attribute *head_attrs[] = {
   DEV_ATTR_PTR(ATTR_AIR_ASSIST_TACH),
   DEV_ATTR_PTR(ATTR_PURGE_CURRENT),
   DEV_ATTR_PTR(ATTR_BEAM_DETECT_ANALOG),
+  DEV_ATTR_PTR(ATTR_BEAM_SAMPLES),
+  DEV_ATTR_PTR(ATTR_BEAM_BASELINE),
+  DEV_ATTR_PTR(ATTR_BEAM_COEFFS),
+  DEV_ATTR_PTR(ATTR_HEAD_FLAGS),
+  DEV_ATTR_PTR(ATTR_HEAD_DAC),
   DEV_ATTR_PTR(ATTR_AIR_ASSIST_PWM),
   DEV_ATTR_PTR(ATTR_WHITE_LED),
   DEV_ATTR_PTR(ATTR_UV_LED),
