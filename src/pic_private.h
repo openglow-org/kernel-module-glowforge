@@ -25,9 +25,11 @@
 #define KERNEL_SRC_PIC_PRIVATE_H_
 
 #include "pic.h"
+#include "pic_stats.h"
 #include "notifiers.h"
 #include "uapi/glowforge.h"
 #include <linux/leds.h>
+#include <linux/spinlock.h>
 
 #define REGISTER_READ_COMMAND(reg)  ((reg)<<1)
 #define REGISTER_WRITE_COMMAND(reg) (0x80|((reg)<<1))
@@ -52,6 +54,27 @@ struct pic_transaction {
 #define TX_RX_BUF_SIZE              (MAX_REGISTERS_PER_TRANSFER*2*sizeof(struct pic_transaction))
 
 /**
+ * The sampler (pic_sampler.c): a thread reading every register in one
+ * transaction at a fixed rate, keeping the newest read and rolling
+ * statistics of the analog channels.
+ */
+struct pic_sampler {
+  struct task_struct *task;
+  /** Guards everything below; the thread and the attribute readers take it. */
+  spinlock_t lock;
+  /** Set while the thread runs and the statistics may be read. */
+  bool running;
+  unsigned int hz;
+  struct pic_stats stats;
+  uint16_t *ring;
+  /** The newest read, and its CLOCK_MONOTONIC time in ns (0: none yet). */
+  pic_value regs[PIC_NUM_REGISTERS];
+  s64 read_ns;
+  u64 reads;
+  u64 errors;
+};
+
+/**
  * Private data members.
  */
 struct pic {
@@ -73,6 +96,7 @@ struct pic {
   struct led_classdev button_led_1;
   struct led_classdev button_led_2;
   struct led_classdev button_led_3;
+  struct pic_sampler sampler;
 };
 
 
@@ -90,5 +114,12 @@ int pic_write_data(struct spi_device *spi, const void *buf, size_t count);
 /* defined in pic_leds.c */
 int pic_register_leds(struct spi_device *spi);
 void pic_unregister_leds(struct spi_device *spi);
+
+/* defined in pic_sampler.c */
+void pic_sampler_init(struct spi_device *spi);
+void pic_sampler_start(struct spi_device *spi);
+void pic_sampler_stop(struct spi_device *spi);
+ssize_t pic_sampler_means_show(struct spi_device *spi, char *buf);
+ssize_t pic_sampler_snapshot_show(struct spi_device *spi, char *buf);
 
 #endif

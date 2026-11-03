@@ -99,6 +99,8 @@
 #define ATTR_PIC_HV               grp_hv
 #define ATTR_PIC_RAW              raw
 #define ATTR_PIC_HEX              hex
+#define ATTR_PIC_MEANS            means
+#define ATTR_PIC_SNAPSHOT         snapshot
 
 #define ATTR_INTAKE1_TACH         tach_intake_1
 #define ATTR_INTAKE2_TACH         tach_intake_2

@@ -56,6 +56,10 @@
  *   When writing to a register group file, the number of bytes written must
  *   exactly match the number of registers in the group times 2. (because each
  *   register is 2 bytes in size.)
+ *
+ * /sys/glowforge/pic/means, /sys/glowforge/pic/snapshot
+ *   The sampler's rolling statistics of the analog channels and its newest
+ *   read of every register (see pic_sampler.c).
  */
 
 #ifndef KERNEL_SRC_PIC_H_

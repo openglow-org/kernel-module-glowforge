@@ -7,7 +7,7 @@ TOOLS_DIR = ./tools
 KERNEL_SRC ?= /usr/src/kernel
 
 SRC = ledtrig_smooth.c io.c head.c head_api.c \
-      pic.c pic_leds.c pic_api.c thermal.c \
+      pic.c pic_leds.c pic_api.c pic_sampler.c pic_stats.c thermal.c \
       cnc_buffer.c cnc.c cnc_api.c cnc_pins.c cnc_interlock.c \
       glowforge.c
 ASM = sdma.asm

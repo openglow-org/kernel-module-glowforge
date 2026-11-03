@@ -337,6 +337,7 @@ int pic_probe(struct spi_device *spi)
   self->dev = &spi->dev;
   mutex_init(&self->lock);
   spi_set_drvdata(spi, self);
+  pic_sampler_init(spi);
 
 #if ENABLE_DEVICE_DETECTION
   /* Detect the device */
@@ -381,6 +382,10 @@ int pic_probe(struct spi_device *spi)
   /* Set initial values */
   pic_write_data(spi, initial_values, sizeof(initial_values));
 
+  /* The sampler starts last, so no error path follows it; without it the
+   * means and snapshot attributes refuse and everything else still works. */
+  pic_sampler_start(spi);
+
   dev_info(&spi->dev, "%s: done", __func__);
   return 0;
 
@@ -400,6 +405,7 @@ void pic_remove(struct spi_device *spi)
   struct pic *self = spi_get_drvdata(spi);
   if (!pic_enabled) { return; }
   dev_info(&spi->dev, "%s: started", __func__);
+  pic_sampler_stop(spi);
   pic_make_safe(spi);
   dms_notifier_chain_unregister(&dms_notifier_list, &self->dms_notifier);
   sysfs_remove_link(glowforge_kobj, PIC_GROUP_NAME);

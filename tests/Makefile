@@ -9,7 +9,7 @@ CC      ?= gcc
 CFLAGS  ?= -O2
 CFLAGS  += -std=gnu11 -Wall -Wextra -Werror -I../src
 
-TESTS = interlock_test backtrack_test
+TESTS = interlock_test backtrack_test pic_stats_test
 
 .PHONY: all check clean
 
@@ -20,6 +20,9 @@ interlock_test: interlock_test.c ../src/cnc_interlock.c ../src/cnc_interlock.h
 
 backtrack_test: backtrack_test.c ../src/cnc_backtrack.h
 	$(CC) $(CFLAGS) -o $@ backtrack_test.c
+
+pic_stats_test: pic_stats_test.c ../src/pic_stats.c ../src/pic_stats.h
+	$(CC) $(CFLAGS) -o $@ pic_stats_test.c ../src/pic_stats.c
 
 check: all
 	@set -e; for t in $(TESTS); do ./$$t; done

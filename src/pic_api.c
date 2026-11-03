@@ -196,6 +196,20 @@ DEFINE_READWRITE_RANGE_ATTR(ATTR_PIC_BUTTON_LEDS, PIC_FIRST_BUTTON_LED_REGISTER,
 DEFINE_DEVICE_ATTR(ATTR_PIC_RAW, S_IRUSR|S_IWUSR, raw_show, raw_store);
 DEFINE_DEVICE_ATTR(ATTR_PIC_HEX, S_IRUSR|S_IWUSR, hex_show, hex_store);
 
+/** The sampler's rolling means and its newest read (pic_sampler.c). */
+static ssize_t means_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+  return pic_sampler_means_show(to_spi_device(dev), buf);
+}
+
+static ssize_t snapshot_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+  return pic_sampler_snapshot_show(to_spi_device(dev), buf);
+}
+
+DEFINE_DEVICE_ATTR(ATTR_PIC_MEANS, S_IRUSR, means_show, NULL);
+DEFINE_DEVICE_ATTR(ATTR_PIC_SNAPSHOT, S_IRUSR, snapshot_show, NULL);
+
 
 static struct attribute *pic_attrs[] = {
   DEV_ATTR_PTR(ATTR_PIC_ID),
@@ -222,6 +236,8 @@ static struct attribute *pic_attrs[] = {
   DEV_ATTR_PTR(ATTR_PIC_BUTTON_LEDS),
   DEV_ATTR_PTR(ATTR_PIC_RAW),
   DEV_ATTR_PTR(ATTR_PIC_HEX),
+  DEV_ATTR_PTR(ATTR_PIC_MEANS),
+  DEV_ATTR_PTR(ATTR_PIC_SNAPSHOT),
   NULL
 };
 
