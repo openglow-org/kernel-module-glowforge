@@ -23,6 +23,7 @@
 #include "thermal_private.h"
 #include "thermal.h"
 #include "device_attr.h"
+#include "heater_lease.h"
 #include "io.h"
 #include "uapi/glowforge.h"
 #include <linux/interrupt.h>
@@ -44,6 +45,7 @@ extern struct kobject *glowforge_kobj;
 
 /** Module parameters */
 extern int thermal_enabled;
+extern unsigned int heater_lease_ms;
 
 #pragma mark - GPIO/PWM definitions
 
@@ -164,9 +166,11 @@ static ssize_t heater_pwm_show(struct device *dev, struct device_attribute *attr
   return scnprintf(buf, PAGE_SIZE, "%hu\n", self->heater_duty_fraction);
 }
 
+/* A write above zero holds for the lease; the writer writes it again
+ * within the lease to keep the heater on (heater_lease.h). */
 static ssize_t heater_pwm_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count) {
   struct thermal *self = dev_get_drvdata(dev);
-  unsigned long new_value; \
+  unsigned long new_value;
   ssize_t ret = kstrtoul(buf, 10, &new_value);
   if (ret) { return ret; }
   if (new_value > HEATER_DUTY_MAX) { return -EINVAL; }
@@ -174,9 +178,21 @@ static ssize_t heater_pwm_store(struct device *dev, struct device_attribute *att
   return count;
 }
 
+/* Leases that ran out with the heater on since the module loaded. */
+static ssize_t heater_lapses_show(struct device *dev, struct device_attribute *attr, char *buf) {
+  struct thermal *self = dev_get_drvdata(dev);
+  unsigned long flags;
+  u32 lapses;
+  spin_lock_irqsave(&self->heater_lock, flags);
+  lapses = self->heater_lapses;
+  spin_unlock_irqrestore(&self->heater_lock, flags);
+  return scnprintf(buf, PAGE_SIZE, "%u\n", lapses);
+}
+
 DEFINE_PWM_ATTR(ATTR_INTAKE_PWM,     PWM_INTAKE);
 DEFINE_PWM_ATTR(ATTR_EXHAUST_PWM,    PWM_EXHAUST);
 static DEVICE_ATTR(heater_pwm, S_IRUSR|S_IWUSR, heater_pwm_show, heater_pwm_store);
+static DEVICE_ATTR(heater_lapses, S_IRUSR, heater_lapses_show, NULL);
 DEFINE_GPIO_ATTR(ATTR_WATER_PUMP_ON, PIN_WATER_PUMP);
 DEFINE_GPIO_ATTR(ATTR_TEC_ON,        PIN_TEC);
 DEFINE_TACH_ATTR(ATTR_INTAKE1_TACH,  TACH_INTAKE1);
@@ -187,6 +203,7 @@ static struct attribute *thermal_attrs[] = {
   DEV_ATTR_PTR(ATTR_INTAKE_PWM),
   DEV_ATTR_PTR(ATTR_EXHAUST_PWM),
   DEV_ATTR_PTR(ATTR_HEATER_PWM),
+  DEV_ATTR_PTR(ATTR_HEATER_LAPSES),
   DEV_ATTR_PTR(ATTR_WATER_PUMP_ON),
   DEV_ATTR_PTR(ATTR_TEC_ON),
   DEV_ATTR_PTR(ATTR_INTAKE1_TACH),
@@ -304,13 +321,38 @@ static ktime_t duty_to_ktime(u16 duty_fraction)
 }
 
 
-/* Called from hard interrupt context */
+/* Names a lapsed lease, out of the timer's hard IRQ. */
+static void heater_lapse_work_fn(struct work_struct *work)
+{
+  struct thermal *self = container_of(work, struct thermal, heater_lapse_work);
+  unsigned long flags;
+  u32 lapses;
+  spin_lock_irqsave(&self->heater_lock, flags);
+  lapses = self->heater_lapses;
+  spin_unlock_irqrestore(&self->heater_lock, flags);
+  dev_warn(self->dev, "heater: no write within its %u ms lease; heater off (lapse %u)",
+           self->heater_lease_ms, lapses);
+}
+
+
+/* Called from hard interrupt context. Every edge checks the lease, so a
+ * heater nobody writes again goes off within one PWM period of its end. */
 static enum hrtimer_restart heater_pwm_timer_cb(struct hrtimer *timer)
 {
   struct thermal *self = container_of(timer, struct thermal, heater_pwm_timer);
-  u16 duty_fraction = self->heater_duty_fraction;
+  u16 duty_fraction;
   int gpio = self->gpios[PIN_WATER_HEATER];
   int new_gpio_level = 0;
+  bool lapsed;
+
+  spin_lock(&self->heater_lock);
+  lapsed = heater_lease_tick(&self->heater_duty_fraction, self->heater_until_ns,
+                             ktime_get_ns(), &self->heater_lapses);
+  duty_fraction = self->heater_duty_fraction;
+  spin_unlock(&self->heater_lock);
+  if (lapsed) {
+    schedule_work(&self->heater_lapse_work);
+  }
 
   if (duty_fraction == 0 || duty_fraction == HEATER_DUTY_MAX) {
     /* 0% - turn heater off  */
@@ -331,10 +373,27 @@ static enum hrtimer_restart heater_pwm_timer_cb(struct hrtimer *timer)
 }
 
 
+/* Process context only (the sysfs write, the safe state, probe). The
+ * output follows on the next timer callback. A duty above zero starts a
+ * new lease. */
 static void thermal_set_heater_duty_fraction(struct thermal *self, u16 duty_fraction)
 {
-  /* Will update heater output on the next timer cb */
-  self->heater_duty_fraction = duty_fraction;
+  unsigned long flags;
+  spin_lock_irqsave(&self->heater_lock, flags);
+  heater_lease_write(&self->heater_duty_fraction, &self->heater_until_ns,
+                     duty_fraction, ktime_get_ns(), self->heater_lease_ms);
+  spin_unlock_irqrestore(&self->heater_lock, flags);
+}
+
+
+/* Stops the heater's timer, then drives its pin low, whatever the timer's
+ * last edge was. Only the timer raises the pin, so once it has stopped no
+ * write of the duty can turn the heater on. Process context; follows
+ * thermal_make_safe(). */
+static void thermal_stop_heater(struct thermal *self)
+{
+  hrtimer_cancel(&self->heater_pwm_timer);
+  gpio_set_value(self->gpios[PIN_WATER_HEATER], 0);
 }
 
 
@@ -356,6 +415,15 @@ int thermal_probe(struct platform_device *pdev)
   self->dev = &pdev->dev;
   platform_set_drvdata(pdev, self);
 
+  spin_lock_init(&self->heater_lock);
+  INIT_WORK(&self->heater_lapse_work, heater_lapse_work_fn);
+  self->heater_lease_ms = heater_lease_ms_held(READ_ONCE(heater_lease_ms));
+  if (self->heater_lease_ms != READ_ONCE(heater_lease_ms)) {
+    dev_warn(&pdev->dev, "heater_lease_ms=%u is out of range; the lease is %u ms",
+             READ_ONCE(heater_lease_ms), self->heater_lease_ms);
+    /* The parameter reads back as the lease in use. */
+    WRITE_ONCE(heater_lease_ms, self->heater_lease_ms);
+  }
   hrtimer_init(&self->heater_pwm_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
   self->heater_pwm_timer.function = heater_pwm_timer_cb;
 
@@ -419,14 +487,38 @@ void thermal_remove(struct platform_device *pdev)
   struct thermal *self = platform_get_drvdata(pdev);
   if (!thermal_enabled) { return; }
   dev_info(&pdev->dev, "%s: started", __func__);
-  thermal_make_safe(self);
-  dms_notifier_chain_unregister(&dms_notifier_list, &self->dms_notifier);
-  hrtimer_cancel(&self->heater_pwm_timer);
+  /* The attributes go first, so no write can turn the heater on again
+   * between the safe state and the timer's end; the pin is driven low once
+   * the timer has stopped, whatever its last edge was. */
   sysfs_remove_link(glowforge_kobj, THERMAL_GROUP_NAME);
   sysfs_remove_group(&pdev->dev.kobj, &thermal_attr_group);
+  thermal_make_safe(self);
+  dms_notifier_chain_unregister(&dms_notifier_list, &self->dms_notifier);
+  thermal_stop_heater(self);
+  cancel_work_sync(&self->heater_lapse_work);
   io_release_pwms(self->pwms, THERMAL_NUM_PWM_CHANNELS);
   thermal_teardown_tachs(self);
   io_release_gpios(self->gpios, THERMAL_NUM_GPIO_PINS);
   dev_info(&pdev->dev, "%s: done", __func__);
   return;
+}
+
+
+/**
+ * Halt, power-off and reboot: the heater and the TEC go off. The heater's
+ * lease lives in its timer, and timers stop with the system, so the pin
+ * would otherwise keep its last level; with the timer stopped here the
+ * heater stays off. The same safe state as thermal_remove(), in the same
+ * order; the device stays bound, so the attributes, the dead man's switch
+ * notifier and the pins are left as they are. The pump and the fans are
+ * not touched (thermal_make_safe()).
+ */
+void thermal_shutdown(struct platform_device *pdev)
+{
+  struct thermal *self = platform_get_drvdata(pdev);
+  if (!thermal_enabled) { return; }
+  dev_info(&pdev->dev, "%s: started", __func__);
+  thermal_make_safe(self);
+  thermal_stop_heater(self);
+  dev_info(&pdev->dev, "%s: done", __func__);
 }

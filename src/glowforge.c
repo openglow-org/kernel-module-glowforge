@@ -56,8 +56,13 @@ int head_enabled = 1;
  *  microseconds (pic.c); 0 turns it off. Writable at runtime. */
 unsigned int pic_settle_us = 500;
 /** Reads a second the PIC sampler makes of every register (pic_sampler.c);
- *  0 turns it off, more than 200 is taken as 200. Fixed at load. */
+ *  0 turns it off, more than 200 is taken as 200. Fixed at load; the PIC
+ *  driver's probe stores the rate in use here, so it reads back as held. */
 unsigned int pic_sampler_hz = 50;
+/** How long a heater write above zero holds, milliseconds (heater_lease.h);
+ *  held to 2000..60000. Fixed at load; the thermal driver's probe stores
+ *  the lease in use here, so it reads back as held. */
+unsigned int heater_lease_ms = 5000;
 
 module_param(cnc_enabled, int, 0);
 module_param(pic_enabled, int, 0);
@@ -67,6 +72,8 @@ module_param(pic_settle_us, uint, 0644);
 MODULE_PARM_DESC(pic_settle_us, "CPU kept busy before every sensor-PIC transaction, microseconds (0 = none)");
 module_param(pic_sampler_hz, uint, 0444);
 MODULE_PARM_DESC(pic_sampler_hz, "PIC sampler reads per second of every register, 1 to 200 (0 = no sampler)");
+module_param(heater_lease_ms, uint, 0444);
+MODULE_PARM_DESC(heater_lease_ms, "how long a loop heater write above zero holds without another, milliseconds (2000 to 60000)");
 
 /** kobject that provides /sys/glowforge */
 struct kobject *glowforge_kobj;
@@ -146,6 +153,7 @@ static struct of_device_id thermal_dt_ids[] = {
 static struct platform_driver thermal = {
   .probe  = thermal_probe,
   .remove = thermal_remove,
+  .shutdown = thermal_shutdown,
   .driver = {
     .name = "glowforge_thermal",
     .owner = THIS_MODULE,

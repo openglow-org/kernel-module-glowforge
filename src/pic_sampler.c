@@ -11,9 +11,11 @@
  * reads instead of one noisy read of its own.
  *
  * /sys/glowforge/pic/means and /sys/glowforge/pic/snapshot report them; both
- * refuse (-ENODATA) while the sampler is off or its newest read is more than
- * a second old, so a reader never takes stale values for current ones. The
- * single-register attributes are unchanged and still read the PIC live.
+ * refuse (-ENODATA) while the sampler is off, before its first read, and once
+ * its newest read is older than the stale age (pic_sampler_policy.h: a second,
+ * or two periods below 2 Hz), so a reader never takes stale values for
+ * current ones. The single-register attributes are unchanged and still read
+ * the PIC live.
  *
  * Copyright 2026 514 LLC d/b/a OpenGlow
  * Written by Scott Wiederhold
@@ -34,6 +36,7 @@
  */
 
 #include "pic_private.h"
+#include "pic_sampler_policy.h"
 #include <linux/hrtimer.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
@@ -47,8 +50,6 @@
 extern unsigned int pic_sampler_hz;
 
 #define PIC_SAMPLER_MAX_HZ      200
-/** Newest read older than this: the attributes refuse. */
-#define PIC_SAMPLER_STALE_NS    NSEC_PER_SEC
 /** Timer slack on each tick. */
 #define PIC_SAMPLER_SLACK_NS    (100 * NSEC_PER_USEC)
 /** The snapshot: s64 read time, then every register. */
@@ -97,11 +98,23 @@ static int pic_sampler_thread(void *data)
   unsigned int i;
 
   while (!kthread_should_stop()) {
-    ssize_t ret = pic_read_register_range(spi, PIC_FIRST_REGISTER, PIC_LAST_REGISTER, (char *)regs);
+    /* The read's time is taken before the transfer: whatever delays the
+     * thread between the transfer and the lock, the read is reported at
+     * least as old as it is, never newer. */
     s64 now_ns = ktime_get_ns();
+    ssize_t ret = pic_read_register_range(spi, PIC_FIRST_REGISTER, PIC_LAST_REGISTER, (char *)regs);
 
     spin_lock(&s->lock);
-    if (ret == (ssize_t)sizeof(regs)) {
+    /* A read counts only with the PIC's ID word in it: the bus master
+     * never errors on a dead or reset PIC, it reads all zeros or ones. */
+    if (ret == (ssize_t)sizeof(regs) && regs[PIC_REG_DUMMY - PIC_FIRST_REGISTER] == PIC_MAGIC_NUMBER) {
+      /* The windows hold one unbroken run of reads (pic_sampler_policy.h).
+       * The gap is from one read's start to the next: a transfer that
+       * stalls for more than a period puts the next tick a period after
+       * its end, so the read after it finds the gap. */
+      if (pic_sampler_run_broken(s->read_ns, now_ns, s->hz)) {
+        pic_stats_clear(&s->stats);
+      }
       memcpy(s->regs, regs, sizeof(regs));
       s->read_ns = now_ns;
       for (i = 0; i < PIC_SAMPLER_CHANNELS; i++) {
@@ -111,6 +124,7 @@ static int pic_sampler_thread(void *data)
       s->reads++;
     } else {
       s->errors++;
+      pic_stats_clear(&s->stats);
     }
     spin_unlock(&s->lock);
 
@@ -147,6 +161,8 @@ void pic_sampler_start(struct spi_device *spi)
              PIC_SAMPLER_MAX_HZ);
     hz = PIC_SAMPLER_MAX_HZ;
   }
+  /* The parameter reads back as the rate in use. */
+  WRITE_ONCE(pic_sampler_hz, hz);
   s->ring = kvcalloc(pic_stats_ring_len(PIC_SAMPLER_CHANNELS, 10 * hz), sizeof(uint16_t), GFP_KERNEL);
   if (!s->ring) {
     dev_warn(&spi->dev, "sampler off: no memory for its statistics");
@@ -200,10 +216,11 @@ void pic_sampler_stop(struct spi_device *spi)
 }
 
 
-/* Under the lock: whether the newest read is current enough to report. */
+/* Under the lock: whether the newest read is current enough to report
+ * (pic_sampler_policy.h). */
 static bool pic_sampler_fresh_locked(const struct pic_sampler *s, s64 now_ns)
 {
-  return s->running && s->read_ns != 0 && now_ns - s->read_ns <= PIC_SAMPLER_STALE_NS;
+  return pic_sampler_fresh(s->running, s->read_ns, now_ns, s->hz);
 }
 
 
@@ -212,7 +229,7 @@ ssize_t pic_sampler_means_show(struct spi_device *spi, char *buf)
   struct pic *self = spi_get_drvdata(spi);
   struct pic_sampler *s = &self->sampler;
   struct pic_stats_summary sum[PIC_SAMPLER_CHANNELS];
-  s64 now_ns = ktime_get_ns();
+  s64 now_ns;
   s64 age_ns;
   unsigned int hz;
   u64 reads, errors;
@@ -220,6 +237,9 @@ ssize_t pic_sampler_means_show(struct spi_device *spi, char *buf)
   int len;
 
   spin_lock(&s->lock);
+  /* The clock under the lock, as the snapshot reads it: a reader
+   * preempted before the lock must not under-report the age. */
+  now_ns = ktime_get_ns();
   if (!pic_sampler_fresh_locked(s, now_ns)) {
     spin_unlock(&s->lock);
     return -ENODATA;

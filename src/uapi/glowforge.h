@@ -108,6 +108,7 @@
 #define ATTR_INTAKE_PWM           intake_pwm
 #define ATTR_EXHAUST_PWM          exhaust_pwm
 #define ATTR_HEATER_PWM           heater_pwm
+#define ATTR_HEATER_LAPSES        heater_lapses
 #define ATTR_WATER_PUMP_ON        water_pump_on
 #define ATTR_TEC_ON               tec_on
 #define ATTR_WATER_TEMP_1         water_temp_1

@@ -30,4 +30,6 @@ int thermal_probe(struct platform_device *pdev);
 
 void thermal_remove(struct platform_device *pdev);
 
+void thermal_shutdown(struct platform_device *pdev);
+
 #endif

@@ -253,13 +253,15 @@ int pic_write_register_range(struct spi_device *spi, enum pic_register first_reg
 }
 
 
+/* The reply to the last raw or hex write (pic_write_data), not whatever
+ * transfer ran last. */
 int pic_copy_last_read_data(struct spi_device *spi, void *buf)
 {
   struct pic *self = spi_get_drvdata(spi);
   int ret;
   mutex_lock(&self->lock);
-  memcpy(buf, self->rxbuf, self->rxbuf_size);
-  ret = self->rxbuf_size;
+  memcpy(buf, self->user_rx, self->user_rx_size);
+  ret = self->user_rx_size;
   mutex_unlock(&self->lock);
   return ret;
 }
@@ -286,6 +288,8 @@ int pic_write_data(struct spi_device *spi, const void *buf, size_t count)
   memcpy(self->txbuf, buf, count);
   self->rxbuf_size = count;
   ret = pic_transfer(self, spi, &x);
+  memcpy(self->user_rx, self->rxbuf, count);
+  self->user_rx_size = (ret == 0) ? count : 0;
   mutex_unlock(&self->lock);
   return ret;
 }

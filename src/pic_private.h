@@ -87,6 +87,11 @@ struct pic {
   struct pic_transaction *rxbuf;
   /** Size of the most recent transfer */
   size_t rxbuf_size;
+  /** The reply to the last raw or hex write, kept apart from rxbuf, which
+   *  every transfer (the sampler's, 50 times a second) overwrites; the raw
+   *  and hex reads return this. Under the lock. */
+  struct pic_transaction user_rx[MAX_REGISTERS_PER_TRANSFER];
+  size_t user_rx_size;
   /** Notifiers */
   struct notifier_block dms_notifier;
   /** Work queue for LED brightness writes (SPI transfers). */

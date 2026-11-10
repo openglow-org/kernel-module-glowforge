@@ -83,6 +83,9 @@ int pic_stats_init(struct pic_stats *st, unsigned int channels,
 /** Adds one sample: @values holds one value per channel. */
 void pic_stats_push(struct pic_stats *st, const uint16_t *values);
 
+/** Empties both windows (a broken run of reads starts over). */
+void pic_stats_clear(struct pic_stats *st);
+
 /** Fills @out with channel @ch's windows. */
 void pic_stats_summarize(const struct pic_stats *st, unsigned int ch,
                          struct pic_stats_summary *out);

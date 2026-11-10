@@ -61,6 +61,19 @@ int pic_stats_init(struct pic_stats *st, unsigned int channels,
 }
 
 
+void pic_stats_clear(struct pic_stats *st)
+{
+  unsigned int ch;
+
+  st->head = 0;
+  st->count = 0;
+  for (ch = 0; ch < PIC_STATS_MAX_CHANNELS; ch++) {
+    st->sum_short[ch] = 0;
+    st->sum_long[ch] = 0;
+  }
+}
+
+
 void pic_stats_push(struct pic_stats *st, const uint16_t *values)
 {
   /* The slot n_short back from the head leaves the short window as this

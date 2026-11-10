@@ -28,6 +28,8 @@
 #include "notifiers.h"
 #include <linux/platform_device.h>
 #include <linux/hrtimer.h>
+#include <linux/spinlock.h>
+#include <linux/workqueue.h>
 
 enum {
   PIN_WATER_PUMP,
@@ -78,6 +80,15 @@ struct thermal {
   struct hrtimer heater_pwm_timer;
   /** Heater PWM duty cycle; 0=0%, 65535=100% */
   u16 heater_duty_fraction;
+  /** The heater's lease (heater_lease.h): the duty and the lease's end
+   *  change together under this lock, taken from the timer's hard IRQ too. */
+  spinlock_t heater_lock;
+  s64 heater_until_ns;
+  unsigned int heater_lease_ms;
+  /** Leases that ran out with the heater on, since the module loaded. */
+  u32 heater_lapses;
+  /** Names a lapse in the log, out of the timer's hard IRQ. */
+  struct work_struct heater_lapse_work;
   /** Tach data. */
   struct tach_channel tachs[THERMAL_NUM_TACH_SIGNALS];
   /** Notifiers */
