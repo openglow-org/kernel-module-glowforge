@@ -194,6 +194,14 @@ static void test_policy(void)
   CHECK(pic_sampler_stale_ns(200) == s);
   CHECK(pic_sampler_stale_ns(1) == 2 * s);
   CHECK(pic_sampler_stale_ns(0) == 2 * s);
+  /* the rate asked for, held to the most the sampler makes */
+  CHECK(pic_sampler_rate(0) == 0);
+  CHECK(pic_sampler_rate(1) == 1);
+  CHECK(pic_sampler_rate(50) == 50);
+  CHECK(pic_sampler_rate(PIC_SAMPLER_MAX_HZ) == PIC_SAMPLER_MAX_HZ);
+  CHECK(pic_sampler_rate(PIC_SAMPLER_MAX_HZ + 1) == PIC_SAMPLER_MAX_HZ);
+  CHECK(pic_sampler_rate(4000000000u) == PIC_SAMPLER_MAX_HZ);
+  CHECK(PIC_SAMPLER_MAX_HZ == 200);
 }
 
 /* A reader gets the newest read up to the stale age and not past it, and

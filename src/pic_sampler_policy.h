@@ -6,6 +6,7 @@
  * they build and are tested on the host. A read's time is taken as the read
  * starts, before its transfer, so a read never looks newer than it is.
  *
+ * - The rate it runs at: the one asked for, held to PIC_SAMPLER_MAX_HZ.
  * - When its newest read is too old to report: one second, or two periods
  *   at a rate under 2 Hz, so a read on time is never refused.
  * - Whether a reader gets the newest read at all: only while the sampler
@@ -36,6 +37,16 @@
 #define KERNEL_SRC_PIC_SAMPLER_POLICY_H_
 
 #define PIC_SAMPLER_NS_PER_S 1000000000LL
+
+/** The most reads a second the sampler makes. */
+#define PIC_SAMPLER_MAX_HZ 200
+
+/** The rate the sampler runs at when @hz reads a second are asked for: 0
+ *  (off) stays 0, and more than PIC_SAMPLER_MAX_HZ is held to it. */
+static inline unsigned int pic_sampler_rate(unsigned int hz)
+{
+  return hz > PIC_SAMPLER_MAX_HZ ? PIC_SAMPLER_MAX_HZ : hz;
+}
 
 /** The period at @hz reads a second, nanoseconds (@hz at least 1). A
  *  32-bit division: a second's nanoseconds fit, and 32-bit ARM has no

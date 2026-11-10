@@ -56,8 +56,9 @@ int head_enabled = 1;
  *  microseconds (pic.c); 0 turns it off. Writable at runtime. */
 unsigned int pic_settle_us = 500;
 /** Reads a second the PIC sampler makes of every register (pic_sampler.c);
- *  0 turns it off, more than 200 is taken as 200. Fixed at load; the PIC
- *  driver's probe stores the rate in use here, so it reads back as held. */
+ *  0 turns it off, more than 200 is taken as 200 (pic_sampler_rate). Fixed
+ *  at load; the PIC driver's probe stores the rate it holds it to here, so
+ *  it reads back as held. */
 unsigned int pic_sampler_hz = 50;
 /** How long a heater write above zero holds, milliseconds (heater_lease.h);
  *  held to 2000..60000. Fixed at load; the thermal driver's probe stores

@@ -49,7 +49,6 @@
 /** Module parameter (glowforge.c): reads a second, 0 = no sampler. */
 extern unsigned int pic_sampler_hz;
 
-#define PIC_SAMPLER_MAX_HZ      200
 /** Timer slack on each tick. */
 #define PIC_SAMPLER_SLACK_NS    (100 * NSEC_PER_USEC)
 /** The snapshot: s64 read time, then every register. */
@@ -156,12 +155,12 @@ void pic_sampler_start(struct spi_device *spi)
     dev_info(&spi->dev, "sampler off (pic_sampler_hz=0)");
     return;
   }
-  if (hz > PIC_SAMPLER_MAX_HZ) {
+  if (pic_sampler_rate(hz) != hz) {
     dev_warn(&spi->dev, "pic_sampler_hz=%u is over %u; sampling at %u", hz, PIC_SAMPLER_MAX_HZ,
-             PIC_SAMPLER_MAX_HZ);
-    hz = PIC_SAMPLER_MAX_HZ;
+             pic_sampler_rate(hz));
+    hz = pic_sampler_rate(hz);
   }
-  /* The parameter reads back as the rate in use. */
+  /* The parameter reads back as the rate it is held to. */
   WRITE_ONCE(pic_sampler_hz, hz);
   s->ring = kvcalloc(pic_stats_ring_len(PIC_SAMPLER_CHANNELS, 10 * hz), sizeof(uint16_t), GFP_KERNEL);
   if (!s->ring) {
