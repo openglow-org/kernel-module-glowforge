@@ -25,7 +25,7 @@
 #define KERNEL_SRC_PIC_PRIVATE_H_
 
 #include "pic.h"
-#include "pic_stats.h"
+#include "pic_sampler_core.h"
 #include "notifiers.h"
 #include "uapi/glowforge.h"
 #include <linux/leds.h>
@@ -60,18 +60,10 @@ struct pic_transaction {
  */
 struct pic_sampler {
   struct task_struct *task;
-  /** Guards everything below; the thread and the attribute readers take it. */
+  /** Guards core; the thread and the attribute readers take it. */
   spinlock_t lock;
-  /** Set while the thread runs and the statistics may be read. */
-  bool running;
-  unsigned int hz;
-  struct pic_stats stats;
-  uint16_t *ring;
-  /** The newest read, and its CLOCK_MONOTONIC time in ns (0: none yet). */
-  pic_value regs[PIC_NUM_REGISTERS];
-  s64 read_ns;
-  u64 reads;
-  u64 errors;
+  /** The sampler's state (pic_sampler_core.h). */
+  struct pic_sampler_core core;
 };
 
 /**

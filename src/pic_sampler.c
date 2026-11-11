@@ -36,103 +36,117 @@
  */
 
 #include "pic_private.h"
-#include "pic_sampler_policy.h"
+#include "pic_sampler_core.h"
 #include <linux/hrtimer.h>
 #include <linux/kthread.h>
 #include <linux/ktime.h>
-#include <linux/math64.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
 
 /** Module parameter (glowforge.c): reads a second, 0 = no sampler. */
 extern unsigned int pic_sampler_hz;
 
 /** Timer slack on each tick. */
 #define PIC_SAMPLER_SLACK_NS    (100 * NSEC_PER_USEC)
-/** The snapshot: s64 read time, then every register. */
-#define PIC_SAMPLER_SNAPSHOT_LEN (sizeof(s64) + PIC_NUM_REGISTERS * sizeof(pic_value))
 
-/** The analog channels the statistics carry, named as their attributes. */
-static const struct {
-  const char *name;
-  enum pic_register reg;
-} pic_sampler_channels[] = {
-  { "water_temp_1", PIC_REG_WATER_THERM1 },
-  { "water_temp_2", PIC_REG_WATER_THERM2 },
-  { "tec_temp", PIC_REG_TEC_THERM },
-  { "pwr_temp", PIC_REG_PWR_THERM },
-  { "lid_ir_1", PIC_REG_LID_IR_DET1 },
-  { "lid_ir_2", PIC_REG_LID_IR_DET2 },
-  { "lid_ir_3", PIC_REG_LID_IR_DET3 },
-  { "lid_ir_4", PIC_REG_LID_IR_DET4 },
-  { "hv_current", PIC_REG_HV_ISENSE },
-  { "hv_voltage", PIC_REG_HV_VSENSE },
+static int pic_sampler_thread(void *data);
+
+
+static struct pic_sampler *pic_sampler_of(void *spi)
+{
+  struct pic *self = spi_get_drvdata(spi);
+
+  return &self->sampler;
+}
+
+
+/* The kernel's side of the sampler (pic_sampler_core.h); ctx is the
+ * spi_device. */
+static long long pic_sampler_op_now(void *ctx)
+{
+  return ktime_get_ns();
+}
+
+static int pic_sampler_op_read(void *ctx, pic_value *regs)
+{
+  return pic_read_register_range(ctx, PIC_FIRST_REGISTER, PIC_LAST_REGISTER, (char *)regs);
+}
+
+static void pic_sampler_op_lock(void *ctx)
+{
+  spin_lock(&pic_sampler_of(ctx)->lock);
+}
+
+static void pic_sampler_op_unlock(void *ctx)
+{
+  spin_unlock(&pic_sampler_of(ctx)->lock);
+}
+
+static uint16_t *pic_sampler_op_alloc_ring(void *ctx, size_t len)
+{
+  return kvcalloc(len, sizeof(uint16_t), GFP_KERNEL);
+}
+
+static void pic_sampler_op_free_ring(void *ctx, uint16_t *ring)
+{
+  kvfree(ring);
+}
+
+static int pic_sampler_op_thread_start(void *ctx)
+{
+  struct task_struct *task = kthread_run(pic_sampler_thread, ctx, "pic-sampler");
+
+  if (IS_ERR(task)) {
+    return PTR_ERR(task);
+  }
+  pic_sampler_of(ctx)->task = task;
+  return 0;
+}
+
+static void pic_sampler_op_thread_stop(void *ctx)
+{
+  struct pic_sampler *s = pic_sampler_of(ctx);
+
+  if (s->task) {
+    kthread_stop(s->task);
+    s->task = NULL;
+  }
+}
+
+static const struct pic_sampler_ops pic_sampler_ops = {
+  .now = pic_sampler_op_now,
+  .read = pic_sampler_op_read,
+  .lock = pic_sampler_op_lock,
+  .unlock = pic_sampler_op_unlock,
+  .alloc_ring = pic_sampler_op_alloc_ring,
+  .free_ring = pic_sampler_op_free_ring,
+  .thread_start = pic_sampler_op_thread_start,
+  .thread_stop = pic_sampler_op_thread_stop,
 };
-#define PIC_SAMPLER_CHANNELS ARRAY_SIZE(pic_sampler_channels)
 
 
 void pic_sampler_init(struct spi_device *spi)
 {
-  struct pic *self = spi_get_drvdata(spi);
-  struct pic_sampler *s = &self->sampler;
+  struct pic_sampler *s = pic_sampler_of(spi);
 
   spin_lock_init(&s->lock);
-  s->running = false;
+  s->core.running = 0;
   s->task = NULL;
-  s->ring = NULL;
+  s->core.ring = NULL;
 }
 
 
 static int pic_sampler_thread(void *data)
 {
-  struct spi_device *spi = data;
-  struct pic *self = spi_get_drvdata(spi);
-  struct pic_sampler *s = &self->sampler;
-  const ktime_t period = ns_to_ktime(div_u64(NSEC_PER_SEC, s->hz));
+  struct pic_sampler *s = pic_sampler_of(data);
+  const long long period_ns = pic_sampler_period_ns(s->core.hz);
   ktime_t next = ktime_get();
-  pic_value regs[PIC_NUM_REGISTERS];
-  uint16_t values[PIC_SAMPLER_CHANNELS];
-  unsigned int i;
 
   while (!kthread_should_stop()) {
-    /* The read's time is taken before the transfer: whatever delays the
-     * thread between the transfer and the lock, the read is reported at
-     * least as old as it is, never newer. */
-    s64 now_ns = ktime_get_ns();
-    ssize_t ret = pic_read_register_range(spi, PIC_FIRST_REGISTER, PIC_LAST_REGISTER, (char *)regs);
+    pic_sampler_cycle(&s->core, &pic_sampler_ops, data);
 
-    spin_lock(&s->lock);
-    /* A read counts only with the PIC's ID word in it: the bus master
-     * never errors on a dead or reset PIC, it reads all zeros or ones. */
-    if (ret == (ssize_t)sizeof(regs) && regs[PIC_REG_DUMMY - PIC_FIRST_REGISTER] == PIC_MAGIC_NUMBER) {
-      /* The windows hold one unbroken run of reads (pic_sampler_policy.h).
-       * The gap is from one read's start to the next: a transfer that
-       * stalls for more than a period puts the next tick a period after
-       * its end, so the read after it finds the gap. */
-      if (pic_sampler_run_broken(s->read_ns, now_ns, s->hz)) {
-        pic_stats_clear(&s->stats);
-      }
-      memcpy(s->regs, regs, sizeof(regs));
-      s->read_ns = now_ns;
-      for (i = 0; i < PIC_SAMPLER_CHANNELS; i++) {
-        values[i] = regs[pic_sampler_channels[i].reg];
-      }
-      pic_stats_push(&s->stats, values);
-      s->reads++;
-    } else {
-      s->errors++;
-      pic_stats_clear(&s->stats);
-    }
-    spin_unlock(&s->lock);
-
-    /* The next tick on the absolute grid; after an overrun the grid
-     * restarts from now instead of firing the missed ticks back to back. */
-    next = ktime_add(next, period);
-    if (ktime_compare(next, ktime_get()) <= 0) {
-      next = ktime_add(ktime_get(), period);
-    }
+    next = ns_to_ktime(pic_sampler_next_tick(ktime_to_ns(next), ktime_get_ns(), period_ns));
     set_current_state(TASK_INTERRUPTIBLE);
     if (kthread_should_stop()) {
       __set_current_state(TASK_RUNNING);
@@ -146,147 +160,58 @@ static int pic_sampler_thread(void *data)
 
 void pic_sampler_start(struct spi_device *spi)
 {
-  struct pic *self = spi_get_drvdata(spi);
-  struct pic_sampler *s = &self->sampler;
-  unsigned int hz = READ_ONCE(pic_sampler_hz);
-  struct task_struct *task;
-
-  if (hz == 0) {
-    dev_info(&spi->dev, "sampler off (pic_sampler_hz=0)");
-    return;
-  }
-  if (pic_sampler_rate(hz) != hz) {
-    dev_warn(&spi->dev, "pic_sampler_hz=%u is over %u; sampling at %u", hz, PIC_SAMPLER_MAX_HZ,
-             pic_sampler_rate(hz));
-    hz = pic_sampler_rate(hz);
-  }
+  struct pic_sampler *s = pic_sampler_of(spi);
+  unsigned int asked = READ_ONCE(pic_sampler_hz);
   /* The parameter reads back as the rate it is held to. */
-  WRITE_ONCE(pic_sampler_hz, hz);
-  s->ring = kvcalloc(pic_stats_ring_len(PIC_SAMPLER_CHANNELS, 10 * hz), sizeof(uint16_t), GFP_KERNEL);
-  if (!s->ring) {
+  unsigned int hz = pic_sampler_rate_take(&pic_sampler_hz);
+  int err;
+
+  if (hz != asked) {
+    dev_warn(&spi->dev, "pic_sampler_hz=%u is over %u; sampling at %u", asked, PIC_SAMPLER_MAX_HZ, hz);
+  }
+  switch (pic_sampler_start_core(&s->core, &pic_sampler_ops, spi, hz, &err)) {
+  case PIC_SAMPLER_STARTED:
+    dev_info(&spi->dev, "sampler at %u Hz", hz);
+    break;
+  case PIC_SAMPLER_OFF:
+    dev_info(&spi->dev, "sampler off (pic_sampler_hz=0)");
+    break;
+  case PIC_SAMPLER_NO_MEMORY:
     dev_warn(&spi->dev, "sampler off: no memory for its statistics");
-    return;
-  }
-  /* Windows of one and ten seconds. */
-  if (pic_stats_init(&s->stats, PIC_SAMPLER_CHANNELS, hz, 10 * hz, s->ring) < 0) {
+    break;
+  case PIC_SAMPLER_NO_STATS:
     dev_warn(&spi->dev, "sampler off: its statistics did not initialize");
-    kvfree(s->ring);
-    s->ring = NULL;
-    return;
+    break;
+  case PIC_SAMPLER_NO_THREAD:
+    dev_warn(&spi->dev, "sampler off: its thread did not start (%d)", err);
+    break;
   }
-  s->hz = hz;
-  s->read_ns = 0;
-  s->reads = 0;
-  s->errors = 0;
-  spin_lock(&s->lock);
-  s->running = true;
-  spin_unlock(&s->lock);
-  task = kthread_run(pic_sampler_thread, spi, "pic-sampler");
-  if (IS_ERR(task)) {
-    dev_warn(&spi->dev, "sampler off: its thread did not start (%ld)", PTR_ERR(task));
-    spin_lock(&s->lock);
-    s->running = false;
-    spin_unlock(&s->lock);
-    kvfree(s->ring);
-    s->ring = NULL;
-    return;
-  }
-  s->task = task;
-  dev_info(&spi->dev, "sampler at %u Hz", hz);
 }
 
 
 void pic_sampler_stop(struct spi_device *spi)
 {
-  struct pic *self = spi_get_drvdata(spi);
-  struct pic_sampler *s = &self->sampler;
-
-  if (s->task) {
-    kthread_stop(s->task);
-    s->task = NULL;
-  }
-  /* Readers only touch the statistics under the lock and while running,
-   * so the ring can go once running is clear. */
-  spin_lock(&s->lock);
-  s->running = false;
-  spin_unlock(&s->lock);
-  kvfree(s->ring);
-  s->ring = NULL;
-}
-
-
-/* Under the lock: whether the newest read is current enough to report
- * (pic_sampler_policy.h). */
-static bool pic_sampler_fresh_locked(const struct pic_sampler *s, s64 now_ns)
-{
-  return pic_sampler_fresh(s->running, s->read_ns, now_ns, s->hz);
+  pic_sampler_stop_core(&pic_sampler_of(spi)->core, &pic_sampler_ops, spi);
 }
 
 
 ssize_t pic_sampler_means_show(struct spi_device *spi, char *buf)
 {
-  struct pic *self = spi_get_drvdata(spi);
-  struct pic_sampler *s = &self->sampler;
-  struct pic_stats_summary sum[PIC_SAMPLER_CHANNELS];
-  s64 now_ns;
-  s64 age_ns;
-  unsigned int hz;
-  u64 reads, errors;
-  unsigned int i;
-  int len;
+  struct pic_sampler_means m;
 
-  spin_lock(&s->lock);
-  /* The clock under the lock, as the snapshot reads it: a reader
-   * preempted before the lock must not under-report the age. */
-  now_ns = ktime_get_ns();
-  if (!pic_sampler_fresh_locked(s, now_ns)) {
-    spin_unlock(&s->lock);
+  if (pic_sampler_means_read(&pic_sampler_of(spi)->core, &pic_sampler_ops, spi, &m) < 0) {
     return -ENODATA;
   }
-  for (i = 0; i < PIC_SAMPLER_CHANNELS; i++) {
-    pic_stats_summarize(&s->stats, i, &sum[i]);
-  }
-  hz = s->hz;
-  age_ns = now_ns - s->read_ns;
-  reads = s->reads;
-  errors = s->errors;
-  spin_unlock(&s->lock);
-
-  len = sysfs_emit(buf, "hz %u age_ms %lld reads %llu errors %llu\n", hz,
-                   (long long)div_s64(age_ns, NSEC_PER_MSEC), reads, errors);
-  for (i = 0; i < PIC_SAMPLER_CHANNELS; i++) {
-    u32 short_frac, long_frac;
-    u64 short_int = div_u64_rem(sum[i].mean_short_milli, 1000, &short_frac);
-    u64 long_int = div_u64_rem(sum[i].mean_long_milli, 1000, &long_frac);
-
-    len += sysfs_emit_at(buf, len, "%s %llu.%03u %llu.%03u %u %u %u %u\n",
-                         pic_sampler_channels[i].name, short_int, short_frac, long_int, long_frac,
-                         sum[i].min_short, sum[i].max_short, sum[i].n_short, sum[i].n_long);
-  }
-  return len;
+  return pic_sampler_means_format(buf, PAGE_SIZE, &m);
 }
 
 
 ssize_t pic_sampler_snapshot_show(struct spi_device *spi, char *buf)
 {
-  struct pic *self = spi_get_drvdata(spi);
-  struct pic_sampler *s = &self->sampler;
-  pic_value regs[PIC_NUM_REGISTERS];
-  s64 read_ns;
-  unsigned int i;
+  struct pic_sampler_snapshot snap;
 
-  spin_lock(&s->lock);
-  if (!pic_sampler_fresh_locked(s, ktime_get_ns())) {
-    spin_unlock(&s->lock);
+  if (pic_sampler_snapshot_read(&pic_sampler_of(spi)->core, &pic_sampler_ops, spi, &snap) < 0) {
     return -ENODATA;
   }
-  memcpy(regs, s->regs, sizeof(regs));
-  read_ns = s->read_ns;
-  spin_unlock(&s->lock);
-
-  put_unaligned_le64(read_ns, buf);
-  for (i = 0; i < PIC_NUM_REGISTERS; i++) {
-    put_unaligned_le16(regs[i], buf + sizeof(s64) + i * sizeof(pic_value));
-  }
-  return PIC_SAMPLER_SNAPSHOT_LEN;
+  return pic_sampler_snapshot_pack(buf, &snap);
 }

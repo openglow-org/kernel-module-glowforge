@@ -22,6 +22,7 @@
  */
 
 #include "pic_private.h"
+#include "pic_user_reply.h"
 #include "uapi/glowforge.h"
 #include "notifiers.h"
 #include <linux/delay.h>
@@ -260,8 +261,7 @@ int pic_copy_last_read_data(struct spi_device *spi, void *buf)
   struct pic *self = spi_get_drvdata(spi);
   int ret;
   mutex_lock(&self->lock);
-  memcpy(buf, self->user_rx, self->user_rx_size);
-  ret = self->user_rx_size;
+  ret = pic_user_reply_copy(buf, self->user_rx, self->user_rx_size);
   mutex_unlock(&self->lock);
   return ret;
 }
@@ -288,8 +288,7 @@ int pic_write_data(struct spi_device *spi, const void *buf, size_t count)
   memcpy(self->txbuf, buf, count);
   self->rxbuf_size = count;
   ret = pic_transfer(self, spi, &x);
-  memcpy(self->user_rx, self->rxbuf, count);
-  self->user_rx_size = (ret == 0) ? count : 0;
+  pic_user_reply_take(self->user_rx, &self->user_rx_size, self->rxbuf, count, ret);
   mutex_unlock(&self->lock);
   return ret;
 }

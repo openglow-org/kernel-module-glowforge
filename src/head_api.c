@@ -23,6 +23,7 @@
  */
 
 #include "head_private.h"
+#include "head_format.h"
 #include "device_attr.h"
 #include "uapi/glowforge.h"
 
@@ -57,10 +58,7 @@ static ssize_t head_read_bit_ascii(struct device *dev, int reg, int bit, char *b
 static ssize_t head_read_dword_ascii(struct device *dev, int reg, char *buf)
 {
   struct i2c_client *client = to_i2c_client(dev);
-  int value = head_read_i2c_word(client, reg);
-  if (value < 0)
-    return value;
-  return scnprintf(buf, PAGE_SIZE, "%d\n", value);
+  return head_format_value(buf, PAGE_SIZE, head_read_i2c_word(client, reg));
 }
 
 
@@ -119,23 +117,19 @@ static ssize_t info_show(struct device *dev, struct device_attribute *attr, char
 static DEVICE_ATTR(info, S_IRUSR, info_show, NULL);
 
 
+static int head_read_coeff(void *client, int reg)
+{
+  return head_read_i2c_word(client, reg);
+}
+
 /* The beam detector's five coefficients as the head holds them (its
  * firmware's own; head.c leaves them alone), as four-digit hex. */
 static ssize_t beam_coeffs_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-  struct i2c_client *client = to_i2c_client(dev);
-  static const int regs[] = {
+  static const int regs[HEAD_BEAM_COEFFS] = {
     HEAD_REG_LAMBDA_K, HEAD_REG_LAMBDA_T, HEAD_REG_THETA_R, HEAD_REG_THETA_T, HEAD_REG_E_T,
   };
-  int v[ARRAY_SIZE(regs)];
-  size_t i;
-
-  for (i = 0; i < ARRAY_SIZE(regs); i++) {
-    v[i] = head_read_i2c_word(client, regs[i]);
-    if (v[i] < 0)
-      return v[i];
-  }
-  return scnprintf(buf, PAGE_SIZE, "%04x %04x %04x %04x %04x\n", v[0], v[1], v[2], v[3], v[4]);
+  return head_format_coeffs(buf, PAGE_SIZE, regs, head_read_coeff, to_i2c_client(dev));
 }
 static DEVICE_ATTR(beam_coeffs, S_IRUSR, beam_coeffs_show, NULL);
 
@@ -143,10 +137,7 @@ static DEVICE_ATTR(beam_coeffs, S_IRUSR, beam_coeffs_show, NULL);
 static ssize_t head_read_byte_ascii(struct device *dev, int reg, char *buf)
 {
   struct i2c_client *client = to_i2c_client(dev);
-  int value = head_read_i2c_byte(client, reg);
-  if (value < 0)
-    return value;
-  return scnprintf(buf, PAGE_SIZE, "%d\n", value);
+  return head_format_value(buf, PAGE_SIZE, head_read_i2c_byte(client, reg));
 }
 
 

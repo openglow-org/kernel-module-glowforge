@@ -39,6 +39,8 @@
 #include "cnc.h"
 #include "head.h"
 #include "thermal.h"
+#include "heater_lease.h"
+#include "pic_sampler_policy.h"
 #include "uapi/glowforge.h"
 
 MODULE_LICENSE("GPL");
@@ -59,11 +61,11 @@ unsigned int pic_settle_us = 500;
  *  0 turns it off, more than 200 is taken as 200 (pic_sampler_rate). Fixed
  *  at load; the PIC driver's probe stores the rate it holds it to here, so
  *  it reads back as held. */
-unsigned int pic_sampler_hz = 50;
+unsigned int pic_sampler_hz = PIC_SAMPLER_DEFAULT_HZ;
 /** How long a heater write above zero holds, milliseconds (heater_lease.h);
  *  held to 2000..60000. Fixed at load; the thermal driver's probe stores
  *  the lease in use here, so it reads back as held. */
-unsigned int heater_lease_ms = 5000;
+unsigned int heater_lease_ms = HEATER_LEASE_MS_DEFAULT;
 
 module_param(cnc_enabled, int, 0);
 module_param(pic_enabled, int, 0);

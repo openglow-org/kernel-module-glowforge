@@ -9,7 +9,7 @@ CC      ?= gcc
 CFLAGS  ?= -O2
 CFLAGS  += -std=gnu11 -Wall -Wextra -Werror -I../src
 
-TESTS = interlock_test backtrack_test pic_stats_test heater_lease_test
+TESTS = interlock_test backtrack_test pic_stats_test heater_lease_test pic_reply_test head_format_test
 
 .PHONY: all check clean
 
@@ -21,11 +21,18 @@ interlock_test: interlock_test.c ../src/cnc_interlock.c ../src/cnc_interlock.h
 backtrack_test: backtrack_test.c ../src/cnc_backtrack.h
 	$(CC) $(CFLAGS) -o $@ backtrack_test.c
 
-pic_stats_test: pic_stats_test.c ../src/pic_stats.c ../src/pic_stats.h ../src/pic_sampler_policy.h
+pic_stats_test: pic_stats_test.c ../src/pic_stats.c ../src/pic_stats.h ../src/pic_sampler_policy.h \
+		../src/pic_sampler_core.h ../src/portable.h ../src/uapi/glowforge.h
 	$(CC) $(CFLAGS) -o $@ pic_stats_test.c ../src/pic_stats.c
 
-heater_lease_test: heater_lease_test.c ../src/heater_lease.h
+heater_lease_test: heater_lease_test.c ../src/heater_lease.h ../src/thermal_safe.h
 	$(CC) $(CFLAGS) -o $@ heater_lease_test.c
+
+pic_reply_test: pic_reply_test.c ../src/pic_user_reply.h ../src/portable.h
+	$(CC) $(CFLAGS) -o $@ pic_reply_test.c
+
+head_format_test: head_format_test.c ../src/head_format.h ../src/portable.h
+	$(CC) $(CFLAGS) -o $@ head_format_test.c
 
 check: all
 	@set -e; for t in $(TESTS); do ./$$t; done

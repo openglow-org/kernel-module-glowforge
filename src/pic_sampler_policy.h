@@ -41,11 +41,24 @@
 /** The most reads a second the sampler makes. */
 #define PIC_SAMPLER_MAX_HZ 200
 
+/** The reads a second the sampler makes unless the module parameter asks
+ *  for another rate. */
+#define PIC_SAMPLER_DEFAULT_HZ 50u
+
 /** The rate the sampler runs at when @hz reads a second are asked for: 0
  *  (off) stays 0, and more than PIC_SAMPLER_MAX_HZ is held to it. */
 static inline unsigned int pic_sampler_rate(unsigned int hz)
 {
   return hz > PIC_SAMPLER_MAX_HZ ? PIC_SAMPLER_MAX_HZ : hz;
+}
+
+/** The rate the parameter *@hz asks for, held (pic_sampler_rate) and
+ *  stored back, so the parameter reads back as the rate in use. Returns
+ *  that rate. */
+static inline unsigned int pic_sampler_rate_take(unsigned int *hz)
+{
+  *hz = pic_sampler_rate(*hz);
+  return *hz;
 }
 
 /** The period at @hz reads a second, nanoseconds (@hz at least 1). A
