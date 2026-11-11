@@ -9,7 +9,8 @@ CC      ?= gcc
 CFLAGS  ?= -O2
 CFLAGS  += -std=gnu11 -Wall -Wextra -Werror -I../src
 
-TESTS = interlock_test backtrack_test pic_stats_test heater_lease_test pic_reply_test head_format_test
+TESTS = interlock_test backtrack_test pic_stats_test heater_lease_test pic_reply_test head_format_test \
+	ledtrig_smooth_test
 
 .PHONY: all check clean
 
@@ -33,6 +34,9 @@ pic_reply_test: pic_reply_test.c ../src/pic_user_reply.h ../src/portable.h
 
 head_format_test: head_format_test.c ../src/head_format.h ../src/portable.h
 	$(CC) $(CFLAGS) -o $@ head_format_test.c
+
+ledtrig_smooth_test: ledtrig_smooth_test.c ../src/ledtrig_smooth_fade.h ../src/portable.h
+	$(CC) $(CFLAGS) -o $@ ledtrig_smooth_test.c
 
 check: all
 	@set -e; for t in $(TESTS); do ./$$t; done
