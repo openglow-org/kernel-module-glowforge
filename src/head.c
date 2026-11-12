@@ -23,8 +23,11 @@
  */
 
 #include "head_private.h"
+#include "head_verify.h"
 #include "uapi/glowforge.h"
 #include "device_attr.h"
+
+#include <linux/delay.h>
 
 extern struct kobject *glowforge_kobj;
 
@@ -59,25 +62,75 @@ int head_read_i2c_word(struct i2c_client *client, int reg)
 }
 
 
-int head_write_i2c_byte(struct i2c_client *client, int reg, uint8_t new_value)
+/* The SMBus calls head_write_held() makes, under the head's lock. */
+static int head_io_write_byte(void *ctx, int reg, int value)
 {
-  struct head_data *self = i2c_get_clientdata(client);
-  int ret;
-  mutex_lock(&self->lock);
-  ret = i2c_smbus_write_byte_data(client, reg, new_value);
-  mutex_unlock(&self->lock);
-  return ret;
+  return i2c_smbus_write_byte_data(ctx, reg, value);
+}
+
+static int head_io_read_byte(void *ctx, int reg)
+{
+  return i2c_smbus_read_byte_data(ctx, reg);
+}
+
+static int head_io_write_word(void *ctx, int reg, int value)
+{
+  return i2c_smbus_write_word_data(ctx, reg, value);
+}
+
+static int head_io_read_word(void *ctx, int reg)
+{
+  return i2c_smbus_read_word_data(ctx, reg);
+}
+
+static void head_io_pause(void *ctx, int ms)
+{
+  msleep(ms);
 }
 
 
-int head_write_i2c_word(struct i2c_client *client, int reg, uint16_t new_value)
+/* A write that needed more than one try, or never held, is logged. */
+static int head_write_report(struct i2c_client *client, int reg, int value, int ret, int got)
+{
+  if (ret > 1)
+    dev_notice_ratelimited(&client->dev, "register 0x%02x held 0x%x after %d writes",
+                           reg, value, ret);
+  else if (ret < 0)
+    dev_warn_ratelimited(&client->dev,
+                         "register 0x%02x did not hold 0x%x after %d writes (it reads %d): %d",
+                         reg, value, HEAD_WRITE_TRIES, got, ret);
+  return ret < 0 ? ret : 0;
+}
+
+
+int head_write_word_held(struct i2c_client *client, int reg, uint16_t value)
 {
   struct head_data *self = i2c_get_clientdata(client);
-  int ret;
+  const struct head_write_io io = {
+    head_io_write_word, head_io_read_word, head_io_pause, client,
+  };
+  int got, ret;
+
   mutex_lock(&self->lock);
-  ret = i2c_smbus_write_word_data(client, reg, new_value);
+  ret = head_write_held(&io, reg, value, reg, 0xffff, value, &got);
   mutex_unlock(&self->lock);
-  return ret;
+  return head_write_report(client, reg, value, ret, got);
+}
+
+
+int head_write_bits_held(struct i2c_client *client, int grp, uint8_t bits, int set)
+{
+  struct head_data *self = i2c_get_clientdata(client);
+  const struct head_write_io io = {
+    head_io_write_byte, head_io_read_byte, head_io_pause, client,
+  };
+  int wreg = grp | (set ? HEAD_REG_BITS_SET : HEAD_REG_BITS_CLEAR);
+  int got, ret;
+
+  mutex_lock(&self->lock);
+  ret = head_write_held(&io, wreg, bits, grp, bits, set ? bits : 0, &got);
+  mutex_unlock(&self->lock);
+  return head_write_report(client, wreg, bits, ret, got);
 }
 
 
@@ -100,16 +153,16 @@ static void head_make_safe(struct head_data *self)
   dev_info(self->dev, "making safe");
 
   /* Both bits are active low: set = driver disabled, low current. */
-  ret = head_write_i2c_byte(client, HEAD_REG_RW_GRP | HEAD_REG_BITS_SET,
-    HEAD_REG_RW_Z_ENABLE | HEAD_REG_RW_Z_CURRENT);
+  ret = head_write_bits_held(client, HEAD_REG_RW_GRP,
+    HEAD_REG_RW_Z_ENABLE | HEAD_REG_RW_Z_CURRENT, 1);
   if (ret < 0) {
     dev_err(self->dev, "cannot de-energize the lens motor: %d", ret);
   }
-  ret = head_write_i2c_word(client, HEAD_REG_MSR_LASER, 0);
+  ret = head_write_word_held(client, HEAD_REG_MSR_LASER, 0);
   if (ret < 0) {
     dev_err(self->dev, "cannot turn off the measure laser: %d", ret);
   }
-  ret = head_write_i2c_word(client, HEAD_REG_UV_LED, 0);
+  ret = head_write_word_held(client, HEAD_REG_UV_LED, 0);
   if (ret < 0) {
     dev_err(self->dev, "cannot turn off the UV LED: %d", ret);
   }

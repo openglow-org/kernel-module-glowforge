@@ -94,7 +94,11 @@ extern const struct attribute_group head_attr_group;
 /* Return the register value, or a negative errno on a failed read. */
 int head_read_i2c_byte(struct i2c_client *client, int reg);
 int head_read_i2c_word(struct i2c_client *client, int reg);
-int head_write_i2c_byte(struct i2c_client *client, int reg, uint8_t new_value);
-int head_write_i2c_word(struct i2c_client *client, int reg, uint16_t new_value);
+/* A write the head holds (head_verify.h): read back and written again until
+ * the register reads it. Return 0, or a negative errno when it never held. A
+ * word register is written whole; a bit of a group register is set or
+ * cleared (@set) through the group's modifier addresses. */
+int head_write_word_held(struct i2c_client *client, int reg, uint16_t value);
+int head_write_bits_held(struct i2c_client *client, int grp, uint8_t bits, int set);
 
 #endif

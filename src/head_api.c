@@ -40,8 +40,7 @@
 static ssize_t head_write_bit_ascii(struct device *dev, int reg, int bit, int value)
 {
   struct i2c_client *client = to_i2c_client(dev);
-  reg = value ? (reg | HEAD_REG_BITS_SET) : (reg | HEAD_REG_BITS_CLEAR);
-  return head_write_i2c_byte(client, reg, bit);
+  return head_write_bits_held(client, reg, bit, value);
 }
 
 
@@ -77,7 +76,7 @@ static ssize_t head_write_dword_ascii(struct device *dev, int reg, const char *b
   if (new_value > 0x03ff)
     return -EINVAL;
 
-  ret = head_write_i2c_word(client, reg, new_value);
+  ret = head_write_word_held(client, reg, new_value);
   return (ret >= 0) ? count : ret;
 }
 
