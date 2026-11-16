@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [master]
+    branches: [master, next]
   pull_request:
   workflow_dispatch:
 
@@ -45,7 +45,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openglow-org/meta-openglow
-          ref: scarthgap
+          ref: ${{ (github.ref_name == 'next' || github.base_ref == 'next') && 'next' || 'scarthgap' }}
           path: meta-openglow
           fetch-depth: 1
 
